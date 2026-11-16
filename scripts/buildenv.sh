@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ENV=${MANGOS_BUILDENV:-/srv/mangos-buildenv}
 MIRROR=${DEBIAN_MIRROR:-https://deb.debian.org/debian}
-BUILD_PACKAGES="live-build debootstrap dctrl-tools xorriso git ca-certificates curl wget rsync
+BUILD_PACKAGES="live-build debootstrap dctrl-tools apt-utils xorriso git ca-certificates curl wget rsync
  cpio zstd squashfs-tools mtools dosfstools
  grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin grub-efi-amd64-signed shim-signed
  syslinux syslinux-common isolinux syslinux-efi
