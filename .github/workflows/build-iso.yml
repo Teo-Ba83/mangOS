@@ -1,0 +1,95 @@
+# Builds the MangOS ISO on GitHub's servers and publishes it as a Release,
+# so it can be downloaded without a Linux computer.
+# Runs on pushes that change the system (not docs-only changes), and on
+# demand from the Actions tab ("Run workflow").
+name: Build MangOS ISO
+
+on:
+  push:
+    branches: [main, master, "ccr-*"]
+    paths-ignore: ["docs/**", "**/*.md"]
+  workflow_dispatch:
+    inputs:
+      require_artcraft:
+        description: "Fail if the ArtCraft apps cannot be downloaded"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-iso-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  iso:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install debootstrap
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q debootstrap debian-archive-keyring
+
+      - name: Build the ISO (Debian 13 build chroot + live-build)
+        run: |
+          set -o pipefail
+          sudo env MANGOS_BUILDENV=/srv/mangos-buildenv \
+            MANGOS_REQUIRE_ARTCRAFT=${{ inputs.require_artcraft && '1' || '0' }} \
+            scripts/buildenv.sh build --clean 2>&1 | tee build.log | grep --line-buffered -E '==>|^E: |ERROR|WARNING|ArtCraft|sha256|b43 firmware|wl for'
+          ls -la out/
+          df -h /
+
+      - name: Prepare release notes
+        id: meta
+        run: |
+          . scripts/versions.env
+          echo "tag=v${MANGOS_VERSION}-build.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          {
+            echo "MangOS ${MANGOS_VERSION}, automatic build #${{ github.run_number }} from \`${GITHUB_SHA::7}\`."
+            echo
+            echo "**Download** \`MangOS-${MANGOS_VERSION}-amd64.iso\` below, check it against the \`.sha256\` file,"
+            echo "write it to a USB stick (balenaEtcher works on Windows and macOS) and start the Mac holding Option."
+            echo "Guide: [docs/INSTALL-USB.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/INSTALL-USB.md)"
+            echo
+            echo '```'
+            cat out/*.sha256
+            echo '```'
+            echo
+            echo "**ArtCraft packages in this build:**"
+            echo '```'
+            grep -E '^ArtCraft: |sha256 OK|ERROR|WARNING' build.log | grep -iE 'artcraft|sha256 OK|craft' || echo "(none)"
+            echo '```'
+            echo
+            echo "Test build: tested in virtual machines only, not yet on a real MacBook. See docs/KNOWN-ISSUES.md."
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: MangOS ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          body_path: release-notes.md
+          prerelease: true
+          files: |
+            out/*.iso
+            out/*.sha256
+
+      - name: Keep the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 14
