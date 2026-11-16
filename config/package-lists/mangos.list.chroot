@@ -133,6 +133,8 @@ rofi
 lightdm
 lightdm-gtk-greeter
 accountsservice
+libnotify-bin
+cosign
 mate-polkit
 light-locker
 zenity

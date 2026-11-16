@@ -27,6 +27,12 @@ ArtCraft creative apps preinstalled.
 | ![Desktop](docs/screenshots/27-final-efi32-live-desktop.png) | ![Logo menu](docs/screenshots/07-logo-menu.png) |
 | ![Launchpad](docs/screenshots/24-launchpad-dark.png) | ![Installer](docs/screenshots/11-installer-1-welcome.png) |
 
+## Updates
+
+Installed systems update themselves from the web: every build publishes a
+signed `mangos-system` package and MangOS installs new versions on its own.
+See [`docs/UPDATES.md`](docs/UPDATES.md) (includes the one-time GitHub setup).
+
 ## Build
 
 On Debian 13:

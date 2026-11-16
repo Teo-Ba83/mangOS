@@ -76,6 +76,16 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 - The launcher installs further Craft apps with `apt` and asks for your
   password.
 
+## Updates
+
+- Web updates need the public repository `Teo-Ba83/mangos-updates` and the
+  `MANGOS_UPDATES_TOKEN` secret (see `docs/UPDATES.md`). Systems installed
+  from ISOs older than build #6 have no updater and must be reinstalled once.
+- Updates change the system defaults; settings a user already changed
+  (theme, dock, panel) stay as the user set them.
+- Removing a program from the package list does not uninstall it from
+  machines that already have it.
+
 ## Installer
 
 - Under emulation (no KVM) the install took about 30 minutes; on the

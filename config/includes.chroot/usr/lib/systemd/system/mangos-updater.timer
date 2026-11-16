@@ -1,0 +1,11 @@
+[Unit]
+Description=MangOS: look for updates 15 minutes after start-up and then every 6 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

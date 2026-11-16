@@ -1,14 +1,5 @@
 #!/bin/sh
-# Boot look: MangOS Plymouth splash, quiet boot, short GRUB menu.
+# Image build: rebuild the initramfs with the MangOS splash, i915 early KMS
+# and the Wi-Fi blacklist (configured by apply-system-config).
 set -e
-plymouth-set-default-theme mangos
-mkdir -p /etc/default/grub.d
-cat > /etc/default/grub.d/50-mangos.cfg <<'G'
-GRUB_DISTRIBUTOR="MangOS"
-GRUB_TIMEOUT=2
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3"
-GRUB_GFXMODE=auto
-G
-# initramfs: include the splash and i915 early KMS (Intel GMA on MacBooks)
-grep -q '^i915' /etc/initramfs-tools/modules || echo i915 >> /etc/initramfs-tools/modules
 update-initramfs -u -k all

@@ -12,6 +12,7 @@
 #   MANGOS_WORK=dir             work directory (default: ./build)
 #   MANGOS_SKIP_ARTCRAFT=1      build without the ArtCraft packages
 #   MANGOS_REQUIRE_ARTCRAFT=1   fail if any ArtCraft package cannot be fetched
+#   MANGOS_BUILD_ID=build.N     build id appended to the version (CI run number)
 #   MANGOS_APT_PROXY=url        HTTP proxy for apt during the build only
 #   MANGOS_BUILD_CA=file.crt    extra CA trusted only *during* the build
 #                               (TLS-intercepting proxies); never shipped
@@ -79,6 +80,13 @@ for deb in "$CACHE"/artcraft/*.deb; do
   EXPECTED_PKGS="$EXPECTED_PKGS $pkg"
   echo "ArtCraft package: $pkg $ver ($arch)"
 done
+# The MangOS system package (look, settings, tools, updater): installed in the
+# image and published for web updates. Version: <MANGOS_VERSION>+<build id>.
+PKG_VERSION="$MANGOS_VERSION+${MANGOS_BUILD_ID:-local$(date -u +%Y%m%d%H%M)}"
+log "Building mangos-system $PKG_VERSION"
+"$ROOT/scripts/build-system-deb.sh" "$OVL" "$WORK/config/packages.chroot" "$PKG_VERSION" \
+  "$WORK/config/package-lists/mangos.list.chroot"
+EXPECTED_PKGS="$EXPECTED_PKGS mangos-system"
 ls "$WORK/config/packages.chroot"
 
 cd "$WORK"
@@ -101,10 +109,11 @@ if [ -e chroot/usr/local/share/ca-certificates/mangos-build-ca.crt ]; then
   echo "ERROR: build CA still present in chroot" >&2; exit 1
 fi
 
-# Every ArtCraft package that was downloaded must really be installed.
+# Every ArtCraft package that was downloaded, and mangos-system, must really be installed.
 for pkg in $EXPECTED_PKGS; do
   if chroot chroot dpkg-query -W -f='${Status} ${Version}\n' "$pkg" 2>/dev/null | grep -q '^install ok installed'; then
-    echo "ArtCraft installed: $pkg $(chroot chroot dpkg-query -W -f='${Version}' "$pkg")"
+    v=$(chroot chroot dpkg-query -W -f='${Version}' "$pkg")
+    if [ "$pkg" = mangos-system ]; then echo "MangOS system installed: $v"; else echo "ArtCraft installed: $pkg $v"; fi
   else
     echo "ERROR: ArtCraft package $pkg was downloaded but is not installed in the image" >&2; exit 1
   fi
@@ -117,5 +126,8 @@ ISO=$(ls -t "$WORK"/*.iso | head -1)
 NAME="MangOS-$MANGOS_VERSION-amd64.iso"
 mv "$ISO" "$OUT/$NAME"
 (cd "$OUT" && sha256sum "$NAME" > "$NAME.sha256")
+# Web update files (fixed names, so .../releases/latest/download/<name> works)
+cp "$WORK/config/packages.chroot/mangos-system_${PKG_VERSION}_all.deb" "$OUT/mangos-system.deb"
+echo "$PKG_VERSION" > "$OUT/mangos-system.version"
 log "Done: $OUT/$NAME"
 cat "$OUT/$NAME.sha256"

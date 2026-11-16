@@ -1,0 +1,157 @@
+#!/bin/sh
+# MangOS system configuration. Runs when the image is built (--build) and
+# every time the mangos-system package is installed or updated.
+# Idempotent. Never overrides user choices (hostname, language, Wi-Fi driver).
+set -e
+BUILD=false; [ "${1:-}" = --build ] && BUILD=true
+
+# ---------------------------------------------------------------- identity
+VERSION=$(dpkg-query -W -f='${Version}' mangos-system 2>/dev/null || echo 0.1.0)
+BASEVER=${VERSION%%+*}; BUILDID=${VERSION#*+}; [ "$BUILDID" = "$VERSION" ] && BUILDID=""
+CODENAME=alphonso; DEBVER=$(cat /etc/debian_version)
+if ! dpkg-divert --list /usr/lib/os-release | grep -q local; then
+  dpkg-divert --quiet --local --no-rename --divert /usr/lib/os-release.debian --add /usr/lib/os-release
+  cp -p /usr/lib/os-release /usr/lib/os-release.debian
+fi
+cat > /usr/lib/os-release <<OS
+PRETTY_NAME="MangOS $BASEVER ($CODENAME)"
+NAME="MangOS"
+VERSION_ID="$BASEVER"
+VERSION="$BASEVER${BUILDID:+ $BUILDID} ($CODENAME)"
+VERSION_CODENAME=trixie
+ID=mangos
+ID_LIKE=debian
+HOME_URL="https://github.com/teo-ba83/mangos"
+SUPPORT_URL="https://github.com/teo-ba83/mangos/issues"
+BUG_REPORT_URL="https://github.com/teo-ba83/mangos/issues"
+LOGO=mangos-logo
+DEBIAN_VERSION_FULL=$DEBVER
+OS
+ln -sf ../usr/lib/os-release /etc/os-release
+printf 'MangOS %s \\n \\l\n\n' "$BASEVER" > /etc/issue
+printf 'MangOS %s\n' "$BASEVER" > /etc/issue.net
+
+# ----------------------------------------------------------------- desktop
+/usr/lib/mangos/xfconf-merge /usr/share/mangos/xfconf /etc/xdg/xfce4/xfconf/xfce-perchannel-xml >/dev/null
+dconf update 2>/dev/null || true
+glib-compile-schemas /usr/share/glib-2.0/schemas
+for t in /usr/share/icons/*/; do
+  [ -f "$t/index.theme" ] && gtk-update-icon-cache -q -f "$t" 2>/dev/null || true
+done
+fc-cache -f >/dev/null 2>&1 || true
+update-desktop-database -q /usr/share/applications 2>/dev/null || true
+
+update-alternatives --set x-session-manager /usr/bin/xfce4-session >/dev/null 2>&1 || true
+update-alternatives --set x-www-browser /usr/bin/firefox-esr >/dev/null 2>&1 || true
+update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper >/dev/null 2>&1 || true
+update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme \
+  /usr/share/icons/WhiteSur-cursors/index.theme 90 >/dev/null
+update-alternatives --set x-cursor-theme /usr/share/icons/WhiteSur-cursors/index.theme >/dev/null
+
+# Global menu: load the appmenu GTK module in every X session.
+cat > /etc/X11/Xsession.d/85mangos-appmenu <<'XS'
+if [ -z "$GTK_MODULES" ]; then GTK_MODULES=appmenu-gtk-module; else
+  case ":$GTK_MODULES:" in *:appmenu-gtk-module:*) ;; *) GTK_MODULES="$GTK_MODULES:appmenu-gtk-module";; esac
+fi
+export GTK_MODULES UBUNTU_MENUPROXY=1
+XS
+
+# Services: Mac keyboard, MacBook fans, MangOS updates; no slow boot waits.
+systemctl enable keyd.service mbpfan.service mangos-updater.timer >/dev/null 2>&1 || true
+systemctl disable NetworkManager-wait-online.service >/dev/null 2>&1 || true
+
+# Automatic security updates from Debian
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AU'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+AU
+
+# Locales: English and Italian available. The default language is set only
+# when the image is built; the installer and the user decide afterwards.
+sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/; s/^# *\(it_IT.UTF-8 UTF-8\)/\1/; s/^# *\(en_GB.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+if $BUILD; then
+  locale-gen >/dev/null
+  update-locale LANG=en_US.UTF-8
+  echo mangos > /etc/hostname
+fi
+
+# Firefox: follow the system light/dark look, no first-run noise.
+mkdir -p /etc/firefox-esr
+cat > /etc/firefox-esr/mangos.js <<'FF'
+pref("browser.startup.homepage_override.mstone", "ignore");
+pref("browser.aboutwelcome.enabled", false);
+pref("widget.gtk.overlay-scrollbars.enabled", true);
+pref("layout.css.prefers-color-scheme.content-override", 2);
+FF
+
+# Launchpad: System Settings shown like on a Mac; clutter hidden.
+sed -i '/^Categories=/{/X-MangOS-Launchpad/!s/$/X-MangOS-Launchpad;/}' /usr/share/applications/xfce-settings-manager.desktop 2>/dev/null || true
+rm -f /etc/xdg/autostart/calamares-desktop-icon.desktop
+for f in xfce4-about debian-xterm debian-uxterm display-im6.q16 im-config ibus-setup \
+         xfce4-run org.xfce.xfce4-appfinder xfce4-session-logout lightdm-gtk-greeter-settings \
+         rofi rofi-theme-selector blueman-adapters vim plank xfce4-mail-reader xfce4-web-browser \
+         xfce4-file-manager xfce4-terminal-emulator calamares-install-debian thunar-bulk-rename \
+         thunar-settings xfce4-settings-editor org.xfce.mousepad-settings; do
+  d=/usr/share/applications/$f.desktop
+  if [ -f "$d" ]; then
+    sed -i '/^NoDisplay=/d; 0,/^\[Desktop Entry\]$/s//[Desktop Entry]\nNoDisplay=true/' "$d"
+  fi
+done
+
+# --------------------------------------------- ArtCraft: dock, default apps
+APPS=/usr/share/applications
+STATUS=/usr/share/mangos/artcraft-status
+: > $STATUS
+find_desktop() {
+  f=$(grep -l -i -E "^Exec=.*$1" $APPS/*.desktop 2>/dev/null | head -1 || true)
+  if [ -n "$f" ]; then basename "$f" .desktop; fi
+  return 0
+}
+L=/etc/skel/.config/plank/dock1/launchers
+mkdir -p $L
+dock() {
+  [ -f "$APPS/$2.desktop" ] || return 0
+  printf '[PlankDockItemPreferences]\nLauncher=file://%s/%s.desktop\n' "$APPS" "$2" > "$L/$1.dockitem"
+}
+dock mangos-launchpad      mangos-launchpad
+dock thunar                thunar
+dock firefox-esr           firefox-esr
+dock vlc                   vlc
+dock xfce4-terminal        xfce4-terminal
+dock xfce-settings-manager xfce-settings-manager
+artcraft_launcher=""; wordcraft=""; pdfcraft=""; photocraft=""
+for app in artcraft-launcher wordcraft pdfcraft photocraft; do
+  id=$(find_desktop "$app"); var=$(echo $app | tr - _)
+  if [ -n "$id" ]; then echo "$var=$id" >> $STATUS; dock "$app" "$id"; eval "$var=\$id"
+  else echo "$var=missing" >> $STATUS; fi
+done
+mime=""
+add() { if [ -n "$2" ]; then mime="$mime$1=$2.desktop;\n"; fi; return 0; }
+add application/pdf "$pdfcraft"
+for t in application/vnd.openxmlformats-officedocument.wordprocessingml.document \
+         application/msword application/vnd.oasis.opendocument.text application/rtf text/rtf; do
+  add $t "$wordcraft"; done
+for t in image/png image/jpeg image/gif image/webp image/tiff image/bmp image/x-xcf \
+         image/vnd.adobe.photoshop; do add $t "$photocraft"; done
+for t in video/mp4 video/x-matroska video/webm video/quicktime audio/mpeg audio/ogg audio/flac; do
+  mime="${mime}$t=vlc.desktop;\n"; done
+for t in text/html x-scheme-handler/http x-scheme-handler/https; do
+  mime="${mime}$t=firefox-esr.desktop;\n"; done
+printf "[Default Applications]\n$mime" > /etc/xdg/mimeapps.list
+
+# ------------------------------------------- Broadcom Wi-Fi (keep the choice)
+if [ -x /usr/bin/mangos-wifi-driver ]; then
+  /usr/bin/mangos-wifi-driver --write-config "$(cat /etc/mangos/wifi-driver 2>/dev/null || echo wl)"
+fi
+
+# -------------------------------------------------------------------- boot
+plymouth-set-default-theme mangos 2>/dev/null || true
+mkdir -p /etc/default/grub.d
+cat > /etc/default/grub.d/50-mangos.cfg <<'G'
+GRUB_DISTRIBUTOR="MangOS"
+GRUB_TIMEOUT=2
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3"
+GRUB_GFXMODE=auto
+G
+grep -q '^i915' /etc/initramfs-tools/modules || echo i915 >> /etc/initramfs-tools/modules
+exit 0

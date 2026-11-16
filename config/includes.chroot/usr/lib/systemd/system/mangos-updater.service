@@ -1,0 +1,11 @@
+[Unit]
+Description=MangOS: install the latest MangOS update from the web
+ConditionKernelCommandLine=!boot=live
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/mangos/mangos-updater auto
+Nice=10
+IOSchedulingClass=idle

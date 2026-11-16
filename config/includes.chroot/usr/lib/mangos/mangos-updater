@@ -1,0 +1,76 @@
+#!/bin/sh
+# MangOS updater: installs new versions of the mangos-system package
+# published by the MangOS build on GitHub.
+#
+#   mangos-updater check     tell whether an update is available (any user)
+#   mangos-updater install   download, verify and install it (root)
+#
+# Every update is verified with cosign: the package must carry a Sigstore
+# signature made by the MangOS GitHub Actions workflow (identity and issuer
+# in /etc/mangos/updates.conf). Unsigned or foreign packages are refused.
+# MANGOS_UPDATES_URL in the environment overrides the download location
+# (used by the build's self-test); the signature check still applies.
+set -eu
+CONF=/etc/mangos/updates.conf
+[ -r "$CONF" ] && . "$CONF"
+URL=${MANGOS_UPDATES_URL_OVERRIDE:-${MANGOS_UPDATES_URL:-}}
+[ -n "$URL" ] || { echo "mangos-updater: no update location configured" >&2; exit 1; }
+MODE=${1:-check}
+STATE=/var/lib/mangos/updater
+log() { echo "mangos-updater: $*"; }
+
+if grep -qw boot=live /proc/cmdline 2>/dev/null && [ -z "${MANGOS_UPDATES_URL_OVERRIDE:-}" ]; then
+  log "live session, nothing to update"; exit 0
+fi
+if [ "${MANGOS_AUTO_UPDATE:-yes}" != yes ] && [ "$MODE" = auto ]; then
+  log "automatic updates are turned off in $CONF"; exit 0
+fi
+
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+fetch() { curl -fsSL --retry 3 --connect-timeout 20 -o "$TMP/$1" "$URL/$1"; }
+
+fetch mangos-system.version || { log "cannot reach $URL"; exit 2; }
+NEW=$(head -c 80 "$TMP/mangos-system.version" | tr -cd '0-9A-Za-z.+~-')
+CUR=$(dpkg-query -W -f='${Version}' mangos-system 2>/dev/null || echo 0)
+if ! dpkg --compare-versions "$NEW" gt "$CUR"; then
+  log "up to date ($CUR)"; exit 0
+fi
+log "update available: $CUR -> $NEW"
+[ "$MODE" = check ] && exit 10
+[ "$MODE" = auto ] && MODE=install
+
+[ "$(id -u)" = 0 ] || { log "installing needs root"; exit 1; }
+fetch mangos-system.deb
+fetch mangos-system.deb.sigstore.json
+if ! cosign verify-blob --bundle "$TMP/mangos-system.deb.sigstore.json" \
+      --certificate-identity-regexp "$MANGOS_SIGNER_IDENTITY_REGEX" \
+      --certificate-oidc-issuer "$MANGOS_SIGNER_ISSUER" \
+      "$TMP/mangos-system.deb" >"$TMP/cosign.log" 2>&1; then
+  log "SIGNATURE CHECK FAILED, update refused"; cat "$TMP/cosign.log" >&2; exit 3
+fi
+log "signature OK"
+PKG=$(dpkg-deb -f "$TMP/mangos-system.deb" Package); VER=$(dpkg-deb -f "$TMP/mangos-system.deb" Version)
+if [ "$PKG" != mangos-system ] || [ "$VER" != "$NEW" ]; then
+  log "package does not match the announced version ($PKG $VER), refused"; exit 3
+fi
+[ "${MANGOS_UPDATER_DRY_RUN:-}" = 1 ] && { log "dry run: verified $PKG $VER, not installing"; exit 0; }
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q >/dev/null || true
+apt-get install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+  "$TMP/mangos-system.deb"
+mkdir -p "$STATE"; echo "$VER $(date -Is)" >> "$STATE/history"
+log "installed MangOS $VER"
+
+# Tell the people who are logged in.
+for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '$1 >= 1000 {print $1}'); do
+  user=$(id -nu "$uid" 2>/dev/null) || continue
+  lang=$(sed -n 's/^export LANG=//p' "$(getent passwd "$user" | cut -d: -f6)/.xsessionrc" 2>/dev/null | tail -1)
+  [ -n "$lang" ] || lang=$(sed -n 's/^LANG=//p' /etc/default/locale 2>/dev/null | tr -d '"')
+  case "$lang" in
+    it*) t="MangOS è stato aggiornato"; b="Versione ${VER}. Alcune modifiche saranno visibili dopo il riavvio." ;;
+    *)   t="MangOS was updated"; b="Version ${VER}. Some changes appear after a restart." ;;
+  esac
+  runuser -u "$user" -- env DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+    notify-send -a MangOS -i mangos-logo "$t" "$b" 2>/dev/null || true
+done
