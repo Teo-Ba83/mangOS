@@ -1,7 +1,16 @@
 #!/bin/sh
 # Root helper for mangos-update (run through pkexec).
-rm -f /run/mangos-update.ok
+# Writes /run/mangos-update.status:  mangos=<updated|current|unreachable|refused>  debian=<ok|failed>
+rm -f /run/mangos-update.ok /run/mangos-update.status
 export DEBIAN_FRONTEND=noninteractive
-/usr/lib/mangos/mangos-updater install || true
-apt-get update -q && apt-get -y -q -o Dpkg::Options::=--force-confold full-upgrade \
-  && touch /run/mangos-update.ok
+/usr/lib/mangos/mangos-updater install > /run/mangos-update.log 2>&1
+case $? in
+  0) if grep -q "installed MangOS" /run/mangos-update.log; then m=updated; else m=current; fi ;;
+  2) m=unreachable ;;
+  3) m=refused ;;
+  *) m=failed ;;
+esac
+if apt-get update -q && apt-get -y -q -o Dpkg::Options::=--force-confold full-upgrade; then d=ok; else d=failed; fi
+echo "mangos=$m debian=$d" > /run/mangos-update.status
+[ "$d" = ok ] && touch /run/mangos-update.ok
+exit 0

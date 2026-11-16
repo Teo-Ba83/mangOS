@@ -1,13 +1,23 @@
 #!/bin/sh
-# Software Update: refresh the package lists and install all updates.
+# Software Update: MangOS updates (signed) and Debian updates, with a clear result.
 case "$LANG" in
-  it*) t="Aggiornamento software"; w="Ricerca e installazione degli aggiornamenti…"; ok="Il sistema è aggiornato."; ko="Aggiornamento non riuscito. Controlla la connessione a internet." ;;
-  *)   t="Software Update"; w="Checking for and installing updates…"; ok="Your system is up to date."; ko="The update failed. Check your internet connection." ;;
+  it*) t="Aggiornamento software"; w="Ricerca e installazione degli aggiornamenti…"
+       up="MangOS è stato aggiornato."; cur="MangOS è aggiornato."
+       unr="Non riesco a raggiungere il server degli aggiornamenti di MangOS (non ancora configurato o connessione assente)."
+       ref="Un aggiornamento di MangOS è stato RIFIUTATO perché la firma non è valida."
+       dok="Gli aggiornamenti di Debian sono installati."; dko="Gli aggiornamenti di Debian non sono riusciti: controlla la connessione." ;;
+  *)   t="Software Update"; w="Checking for and installing updates…"
+       up="MangOS was updated."; cur="MangOS is up to date."
+       unr="Cannot reach the MangOS update server (not set up yet, or no connection)."
+       ref="A MangOS update was REFUSED because its signature is not valid."
+       dok="Debian updates are installed."; dko="Debian updates failed: check your internet connection." ;;
 esac
 pkexec /usr/lib/mangos/apply-updates | zenity --progress --pulsate --auto-close --no-cancel \
   --title="$t" --text="$w" --width=380
-if [ -e /run/mangos-update.ok ]; then
-  zenity --info --title="$t" --text="$ok" --width=320
-else
-  zenity --error --title="$t" --text="$ko" --width=320
-fi
+st=$(cat /run/mangos-update.status 2>/dev/null)
+case "$st" in *mangos=updated*) a=$up;; *mangos=current*) a=$cur;; *mangos=unreachable*) a=$unr;; *mangos=refused*) a=$ref;; *) a=$unr;; esac
+case "$st" in *debian=ok*) b=$dok;; *) b=$dko;; esac
+case "$st" in
+  *mangos=updated*debian=ok*|*mangos=current*debian=ok*) zenity --info --title="$t" --text="$a\n$b" --width=380 ;;
+  *) zenity --warning --title="$t" --text="$a\n$b" --width=380 ;;
+esac

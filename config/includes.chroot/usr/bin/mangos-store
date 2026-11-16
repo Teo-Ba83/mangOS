@@ -482,8 +482,15 @@ class Store(Gtk.Window):
                 else:
                     im = Gtk.Image.new_from_icon_name("package-x-generic", Gtk.IconSize.DND); im.set_pixel_size(44)
                     items.append((im, p, tr("System component", "Componente di sistema")))
+            if rc == 2:
+                warn = Gtk.Label(xalign=0, wrap=True, label=tr(
+                    "Cannot reach the MangOS update server (not set up yet, or no connection).",
+                    "Non riesco a raggiungere il server degli aggiornamenti di MangOS (non ancora configurato o connessione assente)."))
+                warn.get_style_context().add_class("store-dim")
+                listbox.pack_start(warn, False, False, 4); warn.show()
             if not items:
-                status.set_text(tr("MangOS and your apps are up to date.", "MangOS e le tue app sono aggiornati."))
+                status.set_text(tr("Your apps are up to date.", "Le tue app sono aggiornate.") if rc == 2 else
+                                tr("MangOS and your apps are up to date.", "MangOS e le tue app sono aggiornati."))
                 return False
             status.set_text(tr("%d updates available", "%d aggiornamenti disponibili") % len(items))
             for im, name, sub in items[:80]:
