@@ -10,10 +10,12 @@ if ! locale -a | grep -qix "$(echo "$loc" | sed 's/UTF-8/utf8/')"; then
   grep -q "^$loc " /etc/locale.gen || echo "$loc UTF-8" >> /etc/locale.gen
   locale-gen
 fi
+# Display managers and AccountsService use the normalized name (it_IT.utf8)
+norm=$(echo "$loc" | sed 's/\.UTF-8$/.utf8/; s/\.utf-8$/.utf8/')
 user=$(getent passwd "$uid" | cut -d: -f1)
 busctl call org.freedesktop.Accounts "/org/freedesktop/Accounts/User$uid" \
-  org.freedesktop.Accounts.User SetLanguage s "$loc"
+  org.freedesktop.Accounts.User SetLanguage s "$norm"
 # Fallback for display managers that read ~/.dmrc
 home=$(getent passwd "$uid" | cut -d: -f6)
-printf '[Desktop]\nLanguage=%s\nSession=xfce\n' "$loc" > "$home/.dmrc"
+printf '[Desktop]\nLanguage=%s\nSession=xfce\n' "$norm" > "$home/.dmrc"
 chown "$user": "$home/.dmrc"

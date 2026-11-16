@@ -16,4 +16,6 @@ Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 SRC
+# The live-session installer launcher has no use on the installed system.
+rm -f "$CHROOT/usr/share/applications/install-mangos.desktop" "$CHROOT/usr/bin/install-mangos"
 exit 0

@@ -122,6 +122,7 @@ rofi
 lightdm
 lightdm-gtk-greeter
 accountsservice
+mate-polkit
 light-locker
 zenity
 python3-gi

@@ -28,7 +28,15 @@ XfdesktopIconView.view, XfdesktopIconView.view.label { color: $lbl; text-shadow:
 XfdesktopIconView.view:selected { color: #ffffff; text-shadow: none; }
 /* MANGOS-END */
 CSS
-xfdesktop --reload >/dev/null 2>&1 || true
+# GTK reads gtk.css only at start-up: restart the desktop to apply it.
+if pgrep -u "$(id -u)" -x xfdesktop >/dev/null; then
+  xfdesktop --quit >/dev/null 2>&1 || true; sleep 1
+  (setsid xfdesktop >/dev/null 2>&1 &)
+fi
+
+# Logo menu button: solid glyph that contrasts with the top bar
+xfconf-query -c xfce4-panel -p /plugins/plugin-1/button-icon -n -t string \
+  -s "/usr/share/mangos/logo/mangos-logo-mono-$([ $mode = dark ] && echo light || echo dark).svg"
 
 # Wallpaper on every monitor xfdesktop knows about (names differ per machine).
 img=/usr/share/backgrounds/mangos/$wall.png

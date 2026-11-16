@@ -12,6 +12,14 @@ if [ ! -e "$cfg/appearance" ]; then
 fi
 
 if $live; then
+  # Never lock or blank the screen in the live session (e.g. while installing).
+  xfconf-query -c xfce4-session -p /shutdown/LockScreen -n -t bool -s false
+  xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false
+  xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false
+  xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0
+  xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -n -t int -s 0
+  pkill -u "$(id -u)" -x light-locker 2>/dev/null || true
+  xset s off -dpms 2>/dev/null || true
   d=$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop"); mkdir -p "$d"
   f=$d/install-mangos.desktop
   if [ ! -e "$f" ]; then

@@ -1,0 +1,4 @@
+/* MANGOS-BEGIN (managed by mangos-appearance) */
+XfdesktopIconView.view, XfdesktopIconView.view.label { color: #1d1d1f; text-shadow: 0 1px 2px rgba(255,255,255,0.7); background: transparent; }
+XfdesktopIconView.view:selected { color: #ffffff; text-shadow: none; }
+/* MANGOS-END */

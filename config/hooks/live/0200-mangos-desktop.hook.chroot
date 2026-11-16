@@ -65,7 +65,9 @@ for f in xfce4-about debian-xterm debian-uxterm display-im6.q16 im-config ibus-s
          rofi rofi-theme-selector blueman-adapters vim plank xfce4-mail-reader xfce4-web-browser \
          xfce4-file-manager xfce4-terminal-emulator calamares-install-debian thunar-bulk-rename \
          thunar-settings xfce4-settings-editor org.xfce.mousepad-settings; do
-  [ -f /usr/share/applications/$f.desktop ] && \
-    { grep -q '^NoDisplay=true' /usr/share/applications/$f.desktop || \
-      sed -i 's/^\[Desktop Entry\]$/[Desktop Entry]\nNoDisplay=true/' /usr/share/applications/$f.desktop; }
+  d=/usr/share/applications/$f.desktop
+  if [ -f "$d" ]; then
+    sed -i '/^NoDisplay=/d; 0,/^\[Desktop Entry\]$/s//[Desktop Entry]\nNoDisplay=true/' "$d"
+  fi
 done
+exit 0
