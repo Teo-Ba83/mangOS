@@ -4,8 +4,8 @@ Every step of the spec needs evidence before it counts as done. This file
 records what was tested, how, and the result. Screenshots are in
 [`screenshots/`](screenshots/).
 
-**Final ISO tested:** `MangOS-0.1.0-amd64.iso`, 1.37 GB, sha256
-`8a354916e1add11d0933e9c93d1c4982c270bbe05922822f2226ff64d4e18ec4`
+**Final ISO tested:** `MangOS-0.1.0-amd64.iso`, 1.45 GB, sha256
+`3c2d1e2bfc73275b8f9172879088294a0cfd5bf04241813b51faccc013b7742e`
 (built without ArtCraft, see 4.2). The full installation test (5.1/5.2) ran
 on an earlier build. Changes since then (language switch, polkit agent,
 look fixes, and removing the "Install MangOS" launcher in the installer's
@@ -35,6 +35,11 @@ Legend: ✅ passed in VM · ⚠️ passed with a known limit · ❌ not working 
 | 3.3 | Launchpad (dock icon, Cmd+Space/F4) | ✅ | [light](screenshots/06-launchpad-v1.png) · [dark, apps only](screenshots/24-launchpad-dark.png) |
 | 3.3 | Mac shortcuts (keyd) and trackpad | ⏳ | keyd service starts at boot; key behaviour and trackpad need the real keyboard/trackpad |
 | 3.4 | Defaults for every new user | ✅ | the user created by the installer got the full look and the welcome window |
+| Wi-Fi | `wl` (broadcom-sta-dkms) built for the ISO kernel during the build, offline | ✅ | build fails if `wl.ko` is missing; in the VM `modprobe wl` loads it ([log](screenshots/36-wl-loaded-warning.png): "Unpatched return thunk" warning is harmless) |
+| Wi-Fi | Conflicting drivers blacklisted (b43, b43legacy, ssb, bcma, brcmsmac, brcm80211, b44) | ✅ | [check output](screenshots/33-wifi-check-lspci.png) |
+| Wi-Fi | b43 + firmware as reserve (boot entry, `mangos-wifi-driver`) | ✅ | [boot menu](screenshots/32-wifi-boot-menu-b43.png) → b43/bcma/ssb loaded at boot, 155 firmware files ([state](screenshots/34-wifi-check-state-b43.png)); runtime switch both ways ([terminal](screenshots/35-wifi-driver-switch.png)) |
+| Wi-Fi | Live check printing `lspci -nn` and the Wi-Fi state | ✅ | [desktop icon](screenshots/38-live-desktop-wifi-icon.png) · [report](screenshots/33-wifi-check-lspci.png) · [runs at boot](screenshots/37-wifi-check-at-boot.png) |
+| Wi-Fi | Real BCM4321 association with an access point | ⏳ | QEMU cannot emulate the card; needs the MacBook3,1 |
 | 4.1 | Firefox ESR, VLC, Thunar, terminal, NetworkManager, PipeWire, CUPS, unattended-upgrades | ✅ | in the image; dock and Launchpad entries |
 | 4.2 | ArtCraft `.deb`s downloaded and SHA-256 checked | ⏳ | `scripts/fetch-artcraft.sh` is in place, but the build machine could not reach GitHub releases, so the test ISOs were built **without** ArtCraft |
 | 4.3 | WordCraft, PdfCraft, PhotoCraft start | ⏳ | needs an ISO built with network access to GitHub |
