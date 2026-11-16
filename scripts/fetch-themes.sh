@@ -22,7 +22,7 @@ checkout "$WHITESUR_CURSOR_REPO" "$WHITESUR_CURSOR_REF" "$CACHE/WhiteSur-cursors
 export HOME=${HOME:-/root} USER=${USER:-root} SUDO_USER=${SUDO_USER:-root}
 
 TMP=$(mktemp -d)
-( cd "$CACHE/WhiteSur-gtk-theme" && ./install.sh -d "$TMP/themes" -c light -c dark >/dev/null )
+( cd "$CACHE/WhiteSur-gtk-theme" && ./install.sh -d "$TMP/themes" -c light -c dark --black >/dev/null )
 for t in WhiteSur-Light WhiteSur-Dark; do
   rm -rf "$DEST/usr/share/themes/$t"
   cp -a "$TMP/themes/$t" "$DEST/usr/share/themes/"

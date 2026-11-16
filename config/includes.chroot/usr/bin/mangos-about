@@ -72,5 +72,6 @@ class About(Gtk.Window):
         bb.pack_start(more, False, False, 0); bb.pack_start(upd, False, False, 0)
         right.pack_start(bb, False, False, 0)
         self.connect("destroy", Gtk.main_quit)
+        self.connect("show", lambda *_: more.grab_focus())
 
 load_css(); About().show_all(); Gtk.main()

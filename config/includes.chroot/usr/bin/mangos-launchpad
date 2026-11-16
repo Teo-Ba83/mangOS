@@ -5,4 +5,5 @@ if pgrep -u "$(id -u)" -x rofi >/dev/null; then pkill -u "$(id -u)" -x rofi; exi
 mode=$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/mangos/appearance" 2>/dev/null || echo light)
 case "$LANG" in it*) prompt="Cerca";; *) prompt="Search";; esac
 exec rofi -show drun -theme "/usr/share/mangos/rofi/launchpad-$mode.rasi" \
-  -drun-display-format "{name}" -display-drun "$prompt" -no-drun-show-actions "$@"
+  -drun-display-format "{name}" -display-drun "$prompt" -no-drun-show-actions \
+  -drun-categories "AudioVideo,Audio,Video,Development,Education,Game,Graphics,Network,Office,Science,Utility,TerminalEmulator,FileManager,FileTools,X-MangOS-Launchpad" "$@"

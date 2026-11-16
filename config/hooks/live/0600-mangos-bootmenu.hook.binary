@@ -6,6 +6,14 @@ IT="locales=it_IT.UTF-8 keyboard-layouts=it"
 
 if [ -f boot/grub/grub.cfg ]; then
   sed -i 's/Live system (autodetect)/MangOS/; s/Live system (amd64 fail-safe mode)/MangOS (safe graphics)/; s/Live system (amd64)/MangOS/; s/Live system/MangOS/g' boot/grub/grub.cfg
+  # 32-bit EFI (2006-2008 Macs): the 64-bit kernel crashes when it calls the
+  # 32-bit firmware's runtime services (EFI mixed mode), so turn them off there.
+  if ! grep -q mangos_efi32 boot/grub/grub.cfg; then
+    { echo 'if [ "${grub_platform}" = "efi" -a "${grub_cpu}" = "i386" ]; then set mangos_efi32="efi=noruntime"; else set mangos_efi32=""; fi'
+      cat boot/grub/grub.cfg; } > boot/grub/grub.cfg.new
+    mv boot/grub/grub.cfg.new boot/grub/grub.cfg
+    sed -i 's|^\(\s*linux\s.*boot=live.*\)$|\1 ${mangos_efi32}|' boot/grub/grub.cfg
+  fi
   # Duplicate the first MangOS entry as an Italian one
   python3 - boot/grub/grub.cfg "$IT" <<'PY'
 import re, sys

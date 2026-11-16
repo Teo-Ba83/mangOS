@@ -24,8 +24,8 @@ lb config noauto \
   --uefi-secure-boot auto \
   --build-with-chroot false \
   --debian-installer none \
-  --firmware-chroot true \
-  --firmware-binary true \
+  --firmware-chroot false \
+  --firmware-binary false \
   --linux-flavours amd64 \
   --memtest none \
   --chroot-squashfs-compression-type zstd \

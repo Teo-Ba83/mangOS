@@ -2,6 +2,9 @@
 live-boot
 live-config
 live-config-systemd
+live-tools
+user-setup
+iproute2
 systemd-sysv
 sudo
 bash-completion
@@ -23,6 +26,7 @@ p7zip-full
 file
 rsync
 pciutils
+pci.ids
 usbutils
 lshw
 locales
@@ -53,6 +57,11 @@ firmware-atheros
 firmware-realtek
 firmware-iwlwifi
 firmware-brcm80211
+firmware-intel-sound
+firmware-sof-signed
+firmware-libertas
+firmware-mediatek
+firmware-amd-graphics
 intel-microcode
 mbpfan
 keyd

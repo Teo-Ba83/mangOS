@@ -22,6 +22,28 @@ echo "MangOS: firmware is '$variant', installing matching GRUB"
 
 mkdir -p "$CHROOT/tmp/mangos-grub"
 cp "$DEBS/$variant"/*.deb "$CHROOT/tmp/mangos-grub/"
+if [ "$variant" = efi-ia32 ]; then
+  # 32-bit Mac EFI: no NVRAM writes (runtime services are disabled, and Mac
+  # firmware ignores boot entries anyway); always refresh BOOTIA32.EFI.
+  cat <<DC | chroot "$CHROOT" debconf-set-selections
+grub-efi-ia32 grub2/update_nvram boolean false
+grub-efi-ia32 grub2/force_efi_extra_removable boolean true
+DC
+  mkdir -p "$CHROOT/etc/default/grub.d"
+  echo 'GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX efi=noruntime"' > "$CHROOT/etc/default/grub.d/60-mangos-efi32.cfg"
+  # grub-install would try to write an NVRAM boot entry and fail without
+  # runtime services; this wrapper adds --no-nvram on such systems.
+  mkdir -p "$CHROOT/usr/local/sbin"
+  cat > "$CHROOT/usr/local/sbin/grub-install" <<'GI'
+#!/bin/sh
+# MangOS: no EFI variables (32-bit Mac EFI with efi=noruntime) -> --no-nvram
+if [ -d /sys/firmware/efi ] && [ -z "$(ls -A /sys/firmware/efi/efivars 2>/dev/null)" ]; then
+  exec /usr/sbin/grub-install --no-nvram "$@"
+fi
+exec /usr/sbin/grub-install "$@"
+GI
+  chmod 755 "$CHROOT/usr/local/sbin/grub-install"
+fi
 if [ "$variant" = pc ]; then
   # Answer grub-pc's debconf question non-interactively; Calamares runs
   # grub-install itself in the bootloader module.
