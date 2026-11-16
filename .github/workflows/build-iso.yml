@@ -55,6 +55,7 @@ jobs:
             MANGOS_BUILD_ID=build.${{ github.run_number }} \
             MANGOS_REQUIRE_ARTCRAFT=${{ inputs.require_artcraft && '1' || '0' }} \
             scripts/buildenv.sh build --clean 2>&1 | tee build.log | grep --line-buffered -E '==>|^E: |^W: .*[Ll]ocal packages|ERROR|WARNING|ArtCraft|MangOS system|mangos-system|sha256|b43 firmware|wl for|craft'
+          sudo chown -R "$(id -u):$(id -g)" out   # built as root; later steps run as the runner user
           ls -la out/
           size=$(stat -c %s out/MangOS-*.iso)
           echo "ISO size: $size bytes"
