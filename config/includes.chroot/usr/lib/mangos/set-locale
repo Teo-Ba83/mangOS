@@ -19,3 +19,10 @@ busctl call org.freedesktop.Accounts "/org/freedesktop/Accounts/User$uid" \
 home=$(getent passwd "$uid" | cut -d: -f6)
 printf '[Desktop]\nLanguage=%s\nSession=xfce\n' "$norm" > "$home/.dmrc"
 chown "$user": "$home/.dmrc"
+# Debian's PAM resets LANG from /etc/default/locale at login; ~/.xsessionrc is
+# read later by Xsession, so the user's choice wins there.
+lang=${loc%%_*}
+rc=$home/.xsessionrc
+[ -f "$rc" ] && sed -i '/# MANGOS-LANG-BEGIN/,/# MANGOS-LANG-END/d' "$rc"
+printf '# MANGOS-LANG-BEGIN (set by Settings > Language)\nexport LANG=%s\nexport LANGUAGE=%s:en\n# MANGOS-LANG-END\n' "$loc" "$lang" >> "$rc"
+chown "$user": "$rc"
