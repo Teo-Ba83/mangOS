@@ -49,6 +49,10 @@ jobs:
           ls -la out/
           df -h /
 
+      - name: Show the end of the build log (on failure)
+        if: failure()
+        run: tail -80 build.log || true
+
       - name: Prepare release notes
         id: meta
         run: |

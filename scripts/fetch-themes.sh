@@ -19,10 +19,16 @@ checkout "$WHITESUR_ICON_REPO"   "$WHITESUR_ICON_REF"   "$CACHE/WhiteSur-icon-th
 checkout "$WHITESUR_CURSOR_REPO" "$WHITESUR_CURSOR_REF" "$CACHE/WhiteSur-cursors"
 
 # The WhiteSur installer insists on a user name and on sudo existing.
-export HOME=${HOME:-/root} USER=${USER:-root} SUDO_USER=${SUDO_USER:-root}
+# Inside the build chroot this always runs as root; a SUDO_USER inherited from
+# the host (e.g. "runner" on GitHub Actions) does not exist here and makes the
+# WhiteSur installer exit.
+export HOME=/root USER=root LOGNAME=root SUDO_USER=root
+# It also calls setterm, which fails when TERM is unset (sudo on CI runners).
+case "${TERM:-}" in ""|dumb|unknown) export TERM=xterm ;; esac
 
 TMP=$(mktemp -d)
-( cd "$CACHE/WhiteSur-gtk-theme" && ./install.sh -d "$TMP/themes" -c light -c dark --black >/dev/null )
+( cd "$CACHE/WhiteSur-gtk-theme" && ./install.sh -d "$TMP/themes" -c light -c dark --black >"$TMP/gtk.log" 2>&1 ) \
+  || { echo "WhiteSur GTK theme failed:" >&2; tail -30 "$TMP/gtk.log" >&2; exit 1; }
 for t in WhiteSur-Light WhiteSur-Dark; do
   rm -rf "$DEST/usr/share/themes/$t"
   cp -a "$TMP/themes/$t" "$DEST/usr/share/themes/"
@@ -35,7 +41,8 @@ for t in WhiteSur-Light WhiteSur-Dark; do
   fi
 done
 
-( cd "$CACHE/WhiteSur-icon-theme" && ./install.sh -d "$TMP/icons" -t default >/dev/null )
+( cd "$CACHE/WhiteSur-icon-theme" && ./install.sh -d "$TMP/icons" -t default >"$TMP/icons.log" 2>&1 ) \
+  || { echo "WhiteSur icon theme failed:" >&2; tail -30 "$TMP/icons.log" >&2; exit 1; }
 for t in WhiteSur WhiteSur-light WhiteSur-dark; do
   rm -rf "$DEST/usr/share/icons/$t"; cp -a "$TMP/icons/$t" "$DEST/usr/share/icons/"
 done
