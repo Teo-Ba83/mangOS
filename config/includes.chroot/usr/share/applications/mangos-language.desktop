@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Language
+Name[it]=Lingua
+Comment=Change the language of the system
+Comment[it]=Cambia la lingua del sistema
+Exec=mangos-language
+Icon=preferences-desktop-locale
+Categories=Settings;DesktopSettings;X-XFCE-SettingsDialog;X-XFCE-PersonalSettings;
+Keywords=language;locale;lingua;

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Log Out…
+Name[it]=Esci…
+Exec=xfce4-session-logout --logout
+Icon=mangos-logo
+Terminal=false

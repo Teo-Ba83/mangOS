@@ -1,0 +1,27 @@
+#!/bin/sh
+# System identity: name MangOS everywhere (os-release, issue, hostname).
+set -e
+VERSION=0.1.0; CODENAME=alphonso; DEBVER=$(cat /etc/debian_version)
+
+# Divert base-files' os-release so Debian upgrades keep the MangOS identity.
+if [ ! -e /usr/lib/os-release.debian ]; then
+  dpkg-divert --quiet --local --rename --add /usr/lib/os-release
+fi
+cat > /usr/lib/os-release <<OS
+PRETTY_NAME="MangOS $VERSION ($CODENAME)"
+NAME="MangOS"
+VERSION_ID="$VERSION"
+VERSION="$VERSION ($CODENAME)"
+VERSION_CODENAME=trixie
+ID=mangos
+ID_LIKE=debian
+HOME_URL="https://github.com/teo-ba83/mangos"
+SUPPORT_URL="https://github.com/teo-ba83/mangos/issues"
+BUG_REPORT_URL="https://github.com/teo-ba83/mangos/issues"
+LOGO=mangos-logo
+DEBIAN_VERSION_FULL=$DEBVER
+OS
+ln -sf ../usr/lib/os-release /etc/os-release
+printf 'MangOS %s \\n \\l\n\n' "$VERSION" > /etc/issue
+printf 'MangOS %s\n' "$VERSION" > /etc/issue.net
+echo mangos > /etc/hostname

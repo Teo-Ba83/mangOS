@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Force Quit…
+Name[it]=Uscita forzata…
+Exec=xfce4-taskmanager
+Icon=mangos-logo
+Terminal=false

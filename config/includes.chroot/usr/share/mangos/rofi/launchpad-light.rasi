@@ -1,0 +1,49 @@
+/* MangOS Launchpad (light) */
+configuration {
+  show-icons: true;
+  icon-theme: "WhiteSur";
+  font: "Inter 11";
+  scroll-method: 0;   /* page by page */
+  drun-match-fields: "name,generic,exec,categories,keywords";
+  hover-select: true;
+  me-select-entry: "";
+  me-accept-entry: "MousePrimary";
+  kb-cancel: "Escape,Super+space";
+}
+* {
+  background-color: transparent;
+  text-color: #1D1D1F;
+}
+window {
+  fullscreen: true;
+  transparency: "real";
+  background-color: rgba(246,240,232,0.92);
+  padding: 6% 12% 4% 12%;
+}
+mainbox { children: [ inputbar, listview ]; spacing: 4%; }
+inputbar {
+  children: [ entry ];
+  background-color: rgba(0,0,0,0.07);
+  border-radius: 10px;
+  padding: 8px 14px;
+  margin: 0 34% 0 34%;
+}
+entry { placeholder: "Search"; placeholder-color: #1D1D1F; horizontal-align: 0.5; }
+listview {
+  columns: 6;
+  lines: 4;
+  spacing: 3%;
+  fixed-columns: true;
+  flow: horizontal;
+  cycle: false;
+  scrollbar: false;
+}
+element {
+  orientation: vertical;
+  padding: 10px;
+  spacing: 8px;
+  border-radius: 14px;
+}
+element selected { background-color: rgba(0,0,0,0.08); }
+element-icon { size: 64px; horizontal-align: 0.5; }
+element-text { horizontal-align: 0.5; vertical-align: 0.5; text-color: inherit; }

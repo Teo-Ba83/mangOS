@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Lock Screen
+Name[it]=Blocca schermo
+Exec=xflock4
+Icon=mangos-logo
+Terminal=false

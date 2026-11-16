@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=About This Computer
+Name[it]=Informazioni su questo computer
+Exec=mangos-about
+Icon=mangos-logo
+Categories=Settings;System;
+NoDisplay=true

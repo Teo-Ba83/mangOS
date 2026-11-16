@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Appearance…
+Name[it]=Aspetto…
+Exec=mangos-welcome --appearance
+Icon=mangos-logo
+Terminal=false

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Ship the three GRUB flavours as .debs so the installer can set up the
+# right one offline: BIOS (grub-pc), 64-bit EFI, 32-bit EFI (2007 MacBook).
+set -e
+D=/usr/share/mangos/grub-debs
+rm -rf $D; mkdir -p $D
+apt-get update -qq
+for v in pc efi-amd64 efi-ia32; do
+  mkdir -p $D/$v /tmp/grub-$v
+  apt-get install -y -qq --download-only --no-install-recommends \
+    -o Dir::Cache::archives=/tmp/grub-$v grub-$v >/dev/null
+  mv /tmp/grub-$v/*.deb $D/$v/
+  rm -rf /tmp/grub-$v
+  echo "grub-$v:"; ls $D/$v
+done

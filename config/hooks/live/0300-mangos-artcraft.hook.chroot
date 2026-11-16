@@ -1,0 +1,50 @@
+#!/bin/sh
+# ArtCraft integration: dock items, default apps for documents/PDF/images,
+# and a status file the welcome/about tools and the docs refer to.
+set -e
+APPS=/usr/share/applications
+STATUS=/usr/share/mangos/artcraft-status
+: > $STATUS
+
+find_desktop() { # pattern -> desktop file id
+  f=$(grep -l -i -E "^Exec=.*$1" $APPS/*.desktop 2>/dev/null | head -1)
+  [ -n "$f" ] && basename "$f" .desktop
+}
+
+L=/etc/skel/.config/plank/dock1/launchers
+mkdir -p $L
+dock() { # dockitem-name desktop-id
+  [ -f "$APPS/$2.desktop" ] || return 0
+  printf '[PlankDockItemPreferences]\nLauncher=file://%s/%s.desktop\n' "$APPS" "$2" > "$L/$1.dockitem"
+}
+dock mangos-launchpad      mangos-launchpad
+dock thunar                thunar
+dock firefox-esr           firefox-esr
+dock vlc                   vlc
+dock xfce4-terminal        xfce4-terminal
+dock xfce-settings-manager xfce-settings-manager
+
+mime=""
+for app in artcraft-launcher wordcraft pdfcraft photocraft; do
+  id=$(find_desktop "$app")
+  if [ -n "$id" ]; then
+    echo "$app=$id" >> $STATUS
+    dock "$app" "$id"
+  else
+    echo "$app=missing" >> $STATUS
+  fi
+done
+. $STATUS 2>/dev/null || true
+add() { [ -n "$2" ] && [ "$2" != missing ] && mime="$mime$1=$2.desktop;\n"; }
+for t in application/pdf; do add $t "$pdfcraft"; done
+for t in application/vnd.openxmlformats-officedocument.wordprocessingml.document \
+         application/msword application/vnd.oasis.opendocument.text application/rtf text/rtf; do
+  add $t "$wordcraft"; done
+for t in image/png image/jpeg image/gif image/webp image/tiff image/bmp image/x-xcf \
+         image/vnd.adobe.photoshop; do add $t "$photocraft"; done
+for t in video/mp4 video/x-matroska video/webm video/quicktime audio/mpeg audio/ogg audio/flac; do
+  mime="${mime}$t=vlc.desktop;\n"; done
+for t in text/html x-scheme-handler/http x-scheme-handler/https; do
+  mime="${mime}$t=firefox-esr.desktop;\n"; done
+printf "[Default Applications]\n$mime" > /etc/xdg/mimeapps.list
+echo "ArtCraft status:"; cat $STATUS

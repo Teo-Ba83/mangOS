@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=MangOS
+Description=MangOS boot splash: logo and a thin progress bar
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/mangos
+ScriptFile=/usr/share/plymouth/themes/mangos/mangos.script

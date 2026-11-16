@@ -1,0 +1,32 @@
+#!/bin/sh
+# usage: mangos-appearance light|dark
+# Switches GTK, window, icon, dock, Launchpad and wallpaper together.
+set -e
+mode=${1:-light}
+case "$mode" in
+  light) gtk=WhiteSur-Light; icons=WhiteSur;      wall=mangos-light; scheme=prefer-light ;;
+  dark)  gtk=WhiteSur-Dark;  icons=WhiteSur-dark; wall=mangos-dark;  scheme=prefer-dark ;;
+  *) echo "usage: $0 light|dark" >&2; exit 2 ;;
+esac
+cfg=${XDG_CONFIG_HOME:-$HOME/.config}/mangos; mkdir -p "$cfg"; echo "$mode" > "$cfg/appearance"
+
+xfconf-query -c xsettings -p /Net/ThemeName -n -t string -s "$gtk"
+xfconf-query -c xsettings -p /Net/IconThemeName -n -t string -s "$icons"
+xfconf-query -c xfwm4 -p /general/theme -n -t string -s "$gtk"
+xfconf-query -c xfce4-panel -p /panels/dark-mode -n -t bool -s "$([ $mode = dark ] && echo true || echo false)"
+gsettings set org.gnome.desktop.interface color-scheme "$scheme" 2>/dev/null || true
+gsettings set org.gnome.desktop.interface gtk-theme "$gtk" 2>/dev/null || true
+dconf write /net/launchpad/plank/docks/dock1/theme "'$gtk'" 2>/dev/null || true
+
+# Wallpaper on every monitor xfdesktop knows about (names differ per machine).
+img=/usr/share/backgrounds/mangos/$wall.png
+props=$(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep '/last-image$' || true)
+if [ -z "$props" ]; then
+  for m in $(xrandr --listmonitors 2>/dev/null | awk 'NR>1{print $NF}'); do
+    props="$props /backdrop/screen0/monitor$m/workspace0/last-image"
+  done
+fi
+for p in $props; do
+  xfconf-query -c xfce4-desktop -p "$p" -n -t string -s "$img"
+  xfconf-query -c xfce4-desktop -p "${p%last-image}image-style" -n -t int -s 5
+done

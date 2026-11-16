@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Restart…
+Name[it]=Riavvia…
+Exec=xfce4-session-logout --reboot
+Icon=mangos-logo
+Terminal=false

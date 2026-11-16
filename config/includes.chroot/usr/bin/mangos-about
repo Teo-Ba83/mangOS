@@ -1,0 +1,76 @@
+#!/usr/bin/python3
+"""About This Computer: logo, MangOS version and the main hardware facts."""
+import os, re, subprocess, gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, GdkPixbuf
+from mangos import tr, read, os_release, load_css
+
+def cpu():
+    m = re.search(r"model name\s*:\s*(.+)", read("/proc/cpuinfo"))
+    n = read("/proc/cpuinfo").count("processor\t:")
+    name = re.sub(r"\s+", " ", m.group(1)) if m else "?"
+    name = name.replace("(R)", "").replace("(TM)", "").replace("CPU ", "")
+    return f"{name} ({n} core{'s' if n != 1 else ''})"
+
+def memory():
+    m = re.search(r"MemTotal:\s+(\d+)", read("/proc/meminfo"))
+    return f"{round(int(m.group(1)) / 1024 / 1024)} GB" if m else "?"
+
+def graphics():
+    try:
+        out = subprocess.run(["lspci", "-mm"], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            if "VGA" in line or "Display" in line:
+                parts = re.findall(r'"([^"]*)"', line)
+                return f"{parts[1]} {parts[2]}".replace("Corporation", "").strip()
+    except OSError:
+        pass
+    return "?"
+
+def disk():
+    st = os.statvfs("/")
+    total = st.f_blocks * st.f_frsize / 1e9
+    free = st.f_bavail * st.f_frsize / 1e9
+    return tr(f"{free:.0f} GB available of {total:.0f} GB", f"{free:.0f} GB disponibili su {total:.0f} GB")
+
+def model():
+    vendor = read("/sys/class/dmi/id/sys_vendor")
+    prod = read("/sys/class/dmi/id/product_name")
+    return " ".join(x for x in (vendor, prod) if x) or tr("Unknown", "Sconosciuto")
+
+class About(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=tr("About This Computer", "Informazioni su questo computer"))
+        self.set_resizable(False); self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("mangos-logo")
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=28, margin=28)
+        self.add(box)
+        pix = GdkPixbuf.Pixbuf.new_from_file_at_size("/usr/share/mangos/logo/mangos-logo.svg", 150, 150)
+        box.pack_start(Gtk.Image.new_from_pixbuf(pix), False, False, 0)
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.pack_start(right, True, True, 0)
+        rel = os_release()
+        t = Gtk.Label(label=rel.get("NAME", "MangOS"), xalign=0); t.get_style_context().add_class("mangos-title")
+        right.pack_start(t, False, False, 0)
+        v = Gtk.Label(label=tr("Version ", "Versione ") + rel.get("VERSION", ""), xalign=0)
+        v.get_style_context().add_class("mangos-subtitle"); right.pack_start(v, False, False, 0)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=5, margin_top=14)
+        rows = [(tr("Computer", "Computer"), model()), (tr("Processor", "Processore"), cpu()),
+                (tr("Memory", "Memoria"), memory()), (tr("Graphics", "Grafica"), graphics()),
+                (tr("Startup disk", "Disco di avvio"), disk()),
+                (tr("Based on", "Basato su"), "Debian " + read("/etc/debian_version"))]
+        for i, (k, val) in enumerate(rows):
+            a = Gtk.Label(label=k, xalign=1); a.get_style_context().add_class("mangos-key")
+            b = Gtk.Label(label=val, xalign=0, selectable=True); b.get_style_context().add_class("mangos-value")
+            grid.attach(a, 0, i, 1, 1); grid.attach(b, 1, i, 1, 1)
+        right.pack_start(grid, False, False, 0)
+        bb = Gtk.Box(spacing=8, margin_top=16)
+        more = Gtk.Button(label=tr("System Report…", "Resoconto di sistema…"))
+        more.connect("clicked", lambda *_: subprocess.Popen(["xfce4-taskmanager"]))
+        upd = Gtk.Button(label=tr("Software Update…", "Aggiornamento software…"))
+        upd.connect("clicked", lambda *_: subprocess.Popen(["software-properties-gtk", "--open-tab=2"]))
+        bb.pack_start(more, False, False, 0); bb.pack_start(upd, False, False, 0)
+        right.pack_start(bb, False, False, 0)
+        self.connect("destroy", Gtk.main_quit)
+
+load_css(); About().show_all(); Gtk.main()

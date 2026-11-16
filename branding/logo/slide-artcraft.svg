@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <g font-family="Inter, sans-serif" font-weight="700" font-size="64" text-anchor="middle" fill="#fff">
+    <rect x="20" y="120" width="110" height="110" rx="26" fill="#2B7CFF"/><text x="75" y="198">W</text>
+    <rect x="145" y="120" width="110" height="110" rx="26" fill="#E5383B"/><text x="200" y="198">P</text>
+    <rect x="270" y="120" width="110" height="110" rx="26" fill="#7B4DFF"/><text x="325" y="198">Ph</text>
+  </g>
+  <g font-family="Inter, sans-serif" font-size="20" text-anchor="middle" fill="#6E6E73">
+    <text x="75" y="262">WordCraft</text><text x="200" y="262">PdfCraft</text><text x="325" y="262">PhotoCraft</text>
+  </g>
+</svg>

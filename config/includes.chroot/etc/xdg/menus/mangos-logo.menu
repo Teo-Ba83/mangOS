@@ -1,0 +1,24 @@
+<!DOCTYPE Menu PUBLIC "-//freedesktop//DTD Menu 1.0//EN"
+  "http://www.freedesktop.org/standards/menu-spec/1.0/menu.dtd">
+<!-- The MangOS logo menu (top-left corner), like the system menu on a Mac. -->
+<Menu>
+  <Name>MangOS</Name>
+  <AppDir>/usr/share/mangos/logo-menu</AppDir>
+  <Include><All/></Include>
+  <Layout>
+    <Filename>mangos-about.desktop</Filename>
+    <Separator/>
+    <Filename>mangos-settings.desktop</Filename>
+    <Filename>mangos-appearance.desktop</Filename>
+    <Filename>mangos-appstore.desktop</Filename>
+    <Separator/>
+    <Filename>mangos-forcequit.desktop</Filename>
+    <Separator/>
+    <Filename>mangos-sleep.desktop</Filename>
+    <Filename>mangos-restart.desktop</Filename>
+    <Filename>mangos-shutdown.desktop</Filename>
+    <Separator/>
+    <Filename>mangos-lock.desktop</Filename>
+    <Filename>mangos-logout.desktop</Filename>
+  </Layout>
+</Menu>

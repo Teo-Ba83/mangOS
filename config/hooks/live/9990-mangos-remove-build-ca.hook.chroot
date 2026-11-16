@@ -1,0 +1,10 @@
+#!/bin/sh
+# Removes the temporary build-time CA (MANGOS_BUILD_CA) so it never ships.
+set -e
+if [ -e /usr/local/share/ca-certificates/mangos-build-ca.crt ]; then
+  rm -f /usr/local/share/ca-certificates/mangos-build-ca.crt
+  update-ca-certificates --fresh >/dev/null
+  echo "build CA removed"
+fi
+apt-get clean
+rm -rf /var/lib/apt/lists/*_Packages /var/lib/apt/lists/*_Translation-* 2>/dev/null || true

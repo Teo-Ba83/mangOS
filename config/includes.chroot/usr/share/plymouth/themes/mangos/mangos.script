@@ -1,0 +1,57 @@
+# MangOS boot splash
+Window.SetBackgroundTopColor(0.11, 0.11, 0.12);
+Window.SetBackgroundBottomColor(0.11, 0.11, 0.12);
+
+sw = Window.GetWidth(); sh = Window.GetHeight();
+logo.image = Image("logo.png");
+logo.sprite = Sprite(logo.image);
+logo.x = Window.GetX() + sw / 2 - logo.image.GetWidth() / 2;
+logo.y = Window.GetY() + sh / 2 - logo.image.GetHeight() / 2 - 40;
+logo.sprite.SetPosition(logo.x, logo.y, 1);
+
+bg.image = Image("progress-bg.png");
+fg.original = Image("progress-fg.png");
+bar.x = Window.GetX() + sw / 2 - bg.image.GetWidth() / 2;
+bar.y = logo.y + logo.image.GetHeight() + 60;
+bg.sprite = Sprite(bg.image); bg.sprite.SetPosition(bar.x, bar.y, 1);
+fg.sprite = Sprite(); fg.sprite.SetPosition(bar.x, bar.y, 2);
+
+fun progress_cb(duration, progress) {
+    w = Math.Int(fg.original.GetWidth() * progress);
+    if (w < 6) w = 6;
+    fg.sprite.SetImage(fg.original.Scale(w, fg.original.GetHeight()));
+}
+Plymouth.SetBootProgressFunction(progress_cb);
+
+# ---- password prompt (encrypted disks)
+entry.image = Image("entry.png");
+bullet.image = Image("bullet.png");
+fun display_password_cb(prompt, bullets) {
+    prompt_img = Image.Text(prompt, 0.9, 0.9, 0.92);
+    prompt_sprite = Sprite(prompt_img);
+    prompt_sprite.SetPosition(Window.GetX() + sw / 2 - prompt_img.GetWidth() / 2, bar.y - 6, 3);
+    entry.sprite = Sprite(entry.image);
+    ex = Window.GetX() + sw / 2 - entry.image.GetWidth() / 2;
+    entry.sprite.SetPosition(ex, bar.y + 22, 3);
+    for (i = 0; i < 32; i++) { if (bullets_sprites[i]) bullets_sprites[i].SetOpacity(0); }
+    for (i = 0; i < bullets && i < 20; i++) {
+        bullets_sprites[i] = Sprite(bullet.image);
+        bullets_sprites[i].SetPosition(ex + 14 + i * 12, bar.y + 34, 4);
+    }
+    bg.sprite.SetOpacity(0); fg.sprite.SetOpacity(0);
+}
+fun display_normal_cb() {
+    if (entry.sprite) entry.sprite.SetOpacity(0);
+    for (i = 0; i < 32; i++) { if (bullets_sprites[i]) bullets_sprites[i].SetOpacity(0); }
+    bg.sprite.SetOpacity(1); fg.sprite.SetOpacity(1);
+}
+Plymouth.SetDisplayPasswordFunction(display_password_cb);
+Plymouth.SetDisplayNormalFunction(display_normal_cb);
+
+# ---- messages (e.g. fsck)
+msg.sprite = Sprite();
+fun message_cb(text) {
+    msg.sprite.SetImage(Image.Text(text, 0.7, 0.7, 0.72));
+    msg.sprite.SetPosition(Window.GetX() + 20, Window.GetY() + sh - 40, 5);
+}
+Plymouth.SetMessageFunction(message_cb);

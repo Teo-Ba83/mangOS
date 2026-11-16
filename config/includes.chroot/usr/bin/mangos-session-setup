@@ -1,0 +1,25 @@
+#!/bin/sh
+# Runs at every login (autostart). Applies the MangOS look the first time,
+# shows the installer icon in the live session and the welcome window on
+# the first login of an installed system.
+cfg=${XDG_CONFIG_HOME:-$HOME/.config}/mangos
+mkdir -p "$cfg"
+live=false; grep -qw 'boot=live' /proc/cmdline && live=true
+
+if [ ! -e "$cfg/appearance" ]; then
+  sleep 2   # let xfdesktop register the monitors first
+  mangos-appearance light
+fi
+
+if $live; then
+  d=$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop"); mkdir -p "$d"
+  f=$d/install-mangos.desktop
+  if [ ! -e "$f" ]; then
+    cp /usr/share/applications/install-mangos.desktop "$f"; chmod +x "$f"
+    gio set --type=string "$f" metadata::trusted true 2>/dev/null || true
+    gio set --type=string "$f" metadata::xfce-exe-checksum "$(sha256sum "$f" | cut -d' ' -f1)" 2>/dev/null || true
+    touch "$f"
+  fi
+elif [ ! -e "$cfg/welcome-done" ]; then
+  mangos-welcome &
+fi

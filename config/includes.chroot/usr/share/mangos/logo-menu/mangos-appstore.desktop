@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=ArtCraft Apps…
+Name[it]=App ArtCraft…
+Exec=mangos-open-artcraft
+Icon=mangos-logo
+Terminal=false

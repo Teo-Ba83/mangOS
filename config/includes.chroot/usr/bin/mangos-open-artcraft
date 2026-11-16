@@ -1,0 +1,12 @@
+#!/bin/sh
+# Opens the ArtCraft launcher (the "App Store" for the Craft apps).
+for c in artcraft-launcher craft-launcher; do
+  command -v "$c" >/dev/null && exec "$c" "$@"
+done
+f=$(grep -l -i -E '^Exec=.*(artcraft-launcher|craft-launcher)' /usr/share/applications/*.desktop 2>/dev/null | head -1)
+[ -n "$f" ] && exec gtk-launch "$(basename "$f" .desktop)"
+case "$LANG" in
+  it*) msg="Il launcher ArtCraft non è installato. Scaricalo da github.com/storytold/craft-launcher." ;;
+  *)   msg="The ArtCraft launcher is not installed. Get it from github.com/storytold/craft-launcher." ;;
+esac
+zenity --info --title=ArtCraft --text="$msg" --icon=mangos-logo

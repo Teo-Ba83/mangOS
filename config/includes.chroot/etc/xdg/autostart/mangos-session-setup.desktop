@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=MangOS session setup
+Exec=mangos-session-setup
+OnlyShowIn=XFCE;
+NoDisplay=true
+X-GNOME-Autostart-Phase=Applications

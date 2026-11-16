@@ -1,0 +1,58 @@
+#!/usr/bin/python3
+"""Language settings: change the system language without reinstalling.
+Generates the locale if needed, sets it for the user (AccountsService, read
+by the login screen) and asks to log out."""
+import os, subprocess, gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+from mangos import tr, load_css
+
+LANGS = [("en_US.UTF-8", "English (US)"), ("en_GB.UTF-8", "English (UK)"),
+         ("it_IT.UTF-8", "Italiano"), ("de_DE.UTF-8", "Deutsch"),
+         ("fr_FR.UTF-8", "Français"), ("es_ES.UTF-8", "Español"),
+         ("pt_PT.UTF-8", "Português"), ("pt_BR.UTF-8", "Português (Brasil)"),
+         ("nl_NL.UTF-8", "Nederlands"), ("pl_PL.UTF-8", "Polski"),
+         ("ro_RO.UTF-8", "Română"), ("uk_UA.UTF-8", "Українська")]
+
+def current():
+    return os.environ.get("LANG", "en_US.UTF-8")
+
+class LangWin(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=tr("Language", "Lingua"))
+        self.set_default_size(380, 460); self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("preferences-desktop-locale")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=20); self.add(box)
+        lab = Gtk.Label(label=tr("Choose the language for menus and apps.",
+                                 "Scegli la lingua di menu e applicazioni."), xalign=0, wrap=True)
+        box.pack_start(lab, False, False, 0)
+        self.list = Gtk.ListBox(); self.list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        sc = Gtk.ScrolledWindow(); sc.add(self.list); box.pack_start(sc, True, True, 0)
+        cur = current()
+        for code, name in LANGS:
+            row = Gtk.ListBoxRow(); row.code = code
+            row.add(Gtk.Label(label=name, xalign=0, margin=8)); self.list.add(row)
+            if code.split(".")[0] == cur.split(".")[0]:
+                self.list.select_row(row)
+        bar = Gtk.Box(spacing=8); box.pack_end(bar, False, False, 0)
+        ok = Gtk.Button(label=tr("Apply", "Applica")); ok.get_style_context().add_class("suggested-action")
+        ok.connect("clicked", self.apply); bar.pack_end(ok, False, False, 0)
+        self.connect("destroy", Gtk.main_quit)
+
+    def apply(self, *_):
+        row = self.list.get_selected_row()
+        if not row:
+            return
+        r = subprocess.run(["pkexec", "/usr/lib/mangos/set-locale", row.code, str(os.getuid())])
+        if r.returncode != 0:
+            return
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.NONE,
+                              text=tr("Log out to use the new language", "Esci per usare la nuova lingua"))
+        d.add_button(tr("Later", "Più tardi"), Gtk.ResponseType.CANCEL)
+        d.add_button(tr("Log Out", "Esci"), Gtk.ResponseType.OK)
+        if d.run() == Gtk.ResponseType.OK:
+            subprocess.Popen(["xfce4-session-logout", "--logout", "--fast"])
+        d.destroy(); Gtk.main_quit()
+
+load_css(); LangWin().show_all(); Gtk.main()

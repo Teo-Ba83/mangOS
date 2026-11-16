@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Light or Dark
+Name[it]=Chiaro o scuro
+Comment=Switch between the light and dark look
+Comment[it]=Passa dall'aspetto chiaro a quello scuro
+Exec=mangos-welcome --appearance
+Icon=preferences-desktop-theme
+Categories=Settings;DesktopSettings;X-XFCE-SettingsDialog;X-XFCE-PersonalSettings;

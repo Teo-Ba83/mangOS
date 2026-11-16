@@ -1,0 +1,19 @@
+#!/bin/sh
+# usage (as root via pkexec): set-locale <locale> <uid>
+# Makes sure the locale exists and sets it as the user's language.
+set -e
+loc=$1; uid=$2
+case "$loc" in *[!A-Za-z0-9_.@-]*|"") echo "bad locale" >&2; exit 2;; esac
+case "$uid" in *[!0-9]*|"") echo "bad uid" >&2; exit 2;; esac
+if ! locale -a | grep -qix "$(echo "$loc" | sed 's/UTF-8/utf8/')"; then
+  sed -i "s/^# *\($loc .*\)/\1/" /etc/locale.gen
+  grep -q "^$loc " /etc/locale.gen || echo "$loc UTF-8" >> /etc/locale.gen
+  locale-gen
+fi
+user=$(getent passwd "$uid" | cut -d: -f1)
+busctl call org.freedesktop.Accounts "/org/freedesktop/Accounts/User$uid" \
+  org.freedesktop.Accounts.User SetLanguage s "$loc"
+# Fallback for display managers that read ~/.dmrc
+home=$(getent passwd "$uid" | cut -d: -f6)
+printf '[Desktop]\nLanguage=%s\nSession=xfce\n' "$loc" > "$home/.dmrc"
+chown "$user": "$home/.dmrc"

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=System Settings…
+Name[it]=Impostazioni di sistema…
+Exec=xfce4-settings-manager
+Icon=mangos-logo
+Terminal=false

@@ -1,0 +1,21 @@
+# MangOS defaults. Users can change all of these.
+[net/launchpad/plank/docks/dock1]
+theme='WhiteSur-Light'
+position='bottom'
+alignment='center'
+icon-size=44
+zoom-enabled=true
+zoom-percent=150
+hide-mode='none'
+show-dock-item=false
+lock-items=false
+pressure-reveal=false
+current-workspace-only=false
+dock-items=['mangos-launchpad.dockitem', 'thunar.dockitem', 'firefox-esr.dockitem', 'artcraft-launcher.dockitem', 'wordcraft.dockitem', 'pdfcraft.dockitem', 'photocraft.dockitem', 'vlc.dockitem', 'xfce4-terminal.dockitem', 'xfce-settings-manager.dockitem']
+
+[org/gnome/desktop/interface]
+color-scheme='prefer-light'
+gtk-theme='WhiteSur-Light'
+icon-theme='WhiteSur'
+cursor-theme='WhiteSur-cursors'
+font-name='Inter 10'

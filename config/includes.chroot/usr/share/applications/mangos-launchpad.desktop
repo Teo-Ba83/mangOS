@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Launchpad
+Comment=Show all applications
+Comment[it]=Mostra tutte le applicazioni
+Exec=mangos-launchpad
+Icon=mangos-launchpad
+Terminal=false
+Categories=Utility;
+NoDisplay=true

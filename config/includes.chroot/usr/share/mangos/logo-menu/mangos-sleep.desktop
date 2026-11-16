@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Sleep
+Name[it]=Stop
+Exec=systemctl suspend
+Icon=mangos-logo
+Terminal=false

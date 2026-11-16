@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Shut Down…
+Name[it]=Spegni…
+Exec=xfce4-session-logout --halt
+Icon=mangos-logo
+Terminal=false

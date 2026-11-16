@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install MangOS
+Name[it]=Installa MangOS
+GenericName=System Installer
+GenericName[it]=Installazione del sistema
+Comment=Install MangOS on this computer
+Comment[it]=Installa MangOS su questo computer
+Exec=install-mangos
+Icon=install-mangos
+Terminal=false
+Categories=System;
+Keywords=install;installer;calamares;installa;
+StartupNotify=true
+StartupWMClass=calamares

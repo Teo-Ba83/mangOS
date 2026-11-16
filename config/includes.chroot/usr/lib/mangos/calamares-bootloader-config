@@ -1,0 +1,38 @@
+#!/bin/bash
+# Installs the GRUB package that matches this computer's firmware into the
+# new system, from .debs shipped on the live image (works offline):
+#   BIOS            -> grub-pc
+#   64-bit UEFI     -> grub-efi-amd64
+#   32-bit UEFI     -> grub-efi-ia32   (MacBook 2006-2008, A1181 included)
+set -e
+CHROOT=$(mount | grep proc | grep calamares | awk '{print $3}' | sed -e "s#/proc##g")
+DEBS=/usr/share/mangos/grub-debs
+
+if [ "$(mount | grep "$CHROOT " | cut -c -16)" = "/dev/mapper/luks" ]; then
+  echo "UMASK=0077" > "$CHROOT/etc/initramfs-tools/conf.d/initramfs-permissions"
+fi
+
+if [ -d /sys/firmware/efi ]; then
+  size=$(cat /sys/firmware/efi/fw_platform_size 2>/dev/null || echo 64)
+  if [ "$size" = 32 ]; then variant=efi-ia32; else variant=efi-amd64; fi
+else
+  variant=pc
+fi
+echo "MangOS: firmware is '$variant', installing matching GRUB"
+
+mkdir -p "$CHROOT/tmp/mangos-grub"
+cp "$DEBS/$variant"/*.deb "$CHROOT/tmp/mangos-grub/"
+if [ "$variant" = pc ]; then
+  # Answer grub-pc's debconf question non-interactively; Calamares runs
+  # grub-install itself in the bootloader module.
+  echo "grub-pc grub-pc/install_devices_empty boolean true" | chroot "$CHROOT" debconf-set-selections
+fi
+DEBIAN_FRONTEND=noninteractive chroot "$CHROOT" sh -c 'dpkg -i /tmp/mangos-grub/*.deb'
+rm -rf "$CHROOT/tmp/mangos-grub"
+
+# The .debs are only needed on the live image.
+rm -rf "$CHROOT$DEBS"
+
+sed -i 's/^#\?GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' "$CHROOT/etc/default/grub"
+grep -q '^GRUB_DISABLE_OS_PROBER' "$CHROOT/etc/default/grub" || echo 'GRUB_DISABLE_OS_PROBER=false' >> "$CHROOT/etc/default/grub"
+chroot "$CHROOT" /usr/sbin/update-grub || true

@@ -1,0 +1,37 @@
+---
+componentName:  mangos
+welcomeStyleCalamares:   false
+welcomeExpandingLogo:    true
+windowExpanding:    normal
+windowSize: 860px,600px
+windowPlacement: center
+sidebar: widget
+navigation: widget
+
+strings:
+    productName:         MangOS
+    shortProductName:    MangOS
+    version:             0.1.0
+    shortVersion:        0.1
+    versionedName:       MangOS 0.1
+    shortVersionedName:  MangOS 0.1
+    bootloaderEntryName: MangOS
+    productUrl:          https://github.com/teo-ba83/mangos
+    supportUrl:          https://github.com/teo-ba83/mangos/issues
+    knownIssuesUrl:      https://github.com/teo-ba83/mangos/blob/main/docs/KNOWN-ISSUES.md
+    releaseNotesUrl:     https://github.com/teo-ba83/mangos
+    donateUrl:           https://github.com/teo-ba83/mangos
+
+images:
+    productLogo:         "logo.png"
+    productIcon:         "icon.png"
+    productWelcome:      "welcome.png"
+
+slideshow:               "show.qml"
+slideshowAPI:            2
+
+style:
+   SidebarBackground:        "#F2F2F4"
+   SidebarText:              "#6E6E73"
+   SidebarTextCurrent:       "#1D1D1F"
+   SidebarBackgroundCurrent: "#E3E3E8"

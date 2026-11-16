@@ -1,0 +1,50 @@
+#!/usr/bin/python3
+"""Merge MangOS xfconf defaults into the system-wide xfconf files.
+
+usage: xfconf-merge <overlay-dir> <target-dir>
+Every <channel>.xml in overlay-dir is merged property by property into
+target-dir/<channel>.xml (created if missing); MangOS values win, packaged
+properties we do not touch are kept.
+"""
+import os, sys
+import xml.etree.ElementTree as ET
+
+def merge(dst, src):
+    for sp in src.findall("property"):
+        name = sp.get("name")
+        dp = next((p for p in dst.findall("property") if p.get("name") == name), None)
+        if dp is None:
+            dst.append(sp)
+            continue
+        for k, v in sp.attrib.items():
+            dp.set(k, v)
+        if sp.get("type") == "array":
+            for v in list(dp.findall("value")):
+                dp.remove(v)
+            for v in sp.findall("value"):
+                dp.insert(0, v)
+            # keep order as in src
+            vals = dp.findall("value")
+            for v in vals:
+                dp.remove(v)
+            for v in sp.findall("value"):
+                dp.append(v)
+        merge(dp, sp)
+
+src_dir, dst_dir = sys.argv[1], sys.argv[2]
+os.makedirs(dst_dir, exist_ok=True)
+for fn in sorted(os.listdir(src_dir)):
+    if not fn.endswith(".xml"):
+        continue
+    src = ET.parse(os.path.join(src_dir, fn)).getroot()
+    path = os.path.join(dst_dir, fn)
+    if os.path.exists(path):
+        tree = ET.parse(path)
+        merge(tree.getroot(), src)
+        state = "merged"
+    else:
+        tree = ET.ElementTree(src)
+        state = "created"
+    ET.indent(tree)
+    tree.write(path, encoding="UTF-8", xml_declaration=True)
+    print(f"xfconf: {state} {fn}")

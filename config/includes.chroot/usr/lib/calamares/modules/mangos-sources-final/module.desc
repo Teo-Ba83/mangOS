@@ -1,0 +1,6 @@
+---
+type:       "job"
+name:       "mangos-sources-final"
+interface:  "process"
+command:    "/usr/lib/mangos/calamares-sources-final"
+timeout:    120

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Plank
+Comment=The MangOS dock
+Exec=plank
+OnlyShowIn=XFCE;
+NoDisplay=true
+X-GNOME-Autostart-Delay=1
