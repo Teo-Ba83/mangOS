@@ -1,0 +1,34 @@
+#!/bin/sh
+# Root helper for the MangOS Store (run through pkexec).
+#   store-helper refresh            download the app catalog (apt update)
+#   store-helper install PKG...     install Debian packages
+#   store-helper remove PKG...      remove them (never MangOS itself)
+#   store-helper upgrade            MangOS update + all Debian updates
+# Progress lines for the Store come from apt's Status-Fd (pmstatus/dlstatus).
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+APT="apt-get -y -q -o APT::Status-Fd=1 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+check_names() {
+  for p in "$@"; do
+    case "$p" in ""|-*|*[!a-z0-9.+-]*) echo "invalid package name: $p" >&2; exit 2;; esac
+  done
+}
+cmd=${1:-}; [ $# -gt 0 ] && shift
+case "$cmd" in
+  refresh) apt-get -q -o APT::Status-Fd=1 update ;;
+  install)
+    [ $# -gt 0 ] || exit 2; check_names "$@"
+    apt-get -q update >/dev/null 2>&1 || true
+    $APT install "$@" ;;
+  remove)
+    [ $# -gt 0 ] || exit 2; check_names "$@"
+    if apt-get -s remove "$@" 2>/dev/null | grep -q '^Remv mangos-system'; then
+      echo "This app is part of MangOS and cannot be removed." >&2; exit 4
+    fi
+    $APT remove "$@" ;;
+  upgrade)
+    /usr/lib/mangos/mangos-updater install || true
+    apt-get -q -o APT::Status-Fd=1 update
+    $APT full-upgrade ;;
+  *) echo "usage: store-helper refresh|install PKG...|remove PKG...|upgrade" >&2; exit 2 ;;
+esac

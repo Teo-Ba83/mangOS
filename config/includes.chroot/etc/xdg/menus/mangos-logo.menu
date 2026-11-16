@@ -10,6 +10,7 @@
     <Separator/>
     <Filename>mangos-settings.desktop</Filename>
     <Filename>mangos-appearance.desktop</Filename>
+    <Filename>mangos-store.desktop</Filename>
     <Filename>mangos-appstore.desktop</Filename>
     <Separator/>
     <Filename>mangos-forcequit.desktop</Filename>

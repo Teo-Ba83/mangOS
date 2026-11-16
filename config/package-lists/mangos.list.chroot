@@ -133,6 +133,8 @@ rofi
 lightdm
 lightdm-gtk-greeter
 accountsservice
+appstream
+gir1.2-appstream-1.0
 libnotify-bin
 cosign
 mate-polkit

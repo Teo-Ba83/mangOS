@@ -86,6 +86,19 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 - Removing a program from the package list does not uninstall it from
   machines that already have it.
 
+## Store
+
+- The Store shows the apps of Debian's AppStream catalog. The catalog and
+  icons (about 25 MB) are downloaded with the package lists: on a fresh
+  installation the Store offers a "Download the catalog" button the first
+  time, afterwards Debian's daily update keeps it fresh.
+- There is no popularity data offline: each section starts with a curated
+  list of well-known apps, then the rest alphabetically.
+- Installing needs the administrator password (as on a Mac). Apps that are
+  part of MangOS cannot be removed from the Store.
+- "App Store" is an Apple trademark, so the MangOS one is simply called
+  **Store**, with its own icon.
+
 ## Installer
 
 - Under emulation (no KVM) the install took about 30 minutes; on the

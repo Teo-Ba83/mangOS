@@ -117,6 +117,7 @@ dock mangos-launchpad      mangos-launchpad
 dock thunar                thunar
 dock firefox-esr           firefox-esr
 dock vlc                   vlc
+dock mangos-store          mangos-store
 dock xfce4-terminal        xfce4-terminal
 dock xfce-settings-manager xfce-settings-manager
 artcraft_launcher=""; wordcraft=""; pdfcraft=""; photocraft=""

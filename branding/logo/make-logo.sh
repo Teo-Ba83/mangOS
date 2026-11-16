@@ -134,11 +134,13 @@ for s in 16 22 24 32 48 64 128 256 512; do
   cp png/mangos-logo-$s.png "$d/mangos-logo.png"
   cp png/mangos-logo-$s.png "$d/install-mangos.png"
   rsvg-convert -w $s -h $s mangos-launchpad.svg -o "$d/mangos-launchpad.png"
+  rsvg-convert -w $s -h $s mangos-store.svg -o "$d/mangos-store.png"
 done
 d=$DEST/usr/share/icons/hicolor/scalable/apps; mkdir -p "$d"
 cp mangos-logo.svg "$d/mangos-logo.svg"
 cp mangos-logo.svg "$d/install-mangos.svg"
 cp mangos-launchpad.svg "$d/mangos-launchpad.svg"
+cp mangos-store.svg "$d/mangos-store.svg"
 cp mangos-logo-symbolic.svg "$d/mangos-logo-symbolic.svg"
 mkdir -p "$DEST/usr/share/pixmaps"
 cp png/mangos-logo-128.png "$DEST/usr/share/pixmaps/mangos-logo.png"

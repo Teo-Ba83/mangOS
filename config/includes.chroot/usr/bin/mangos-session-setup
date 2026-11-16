@@ -11,6 +11,23 @@ if [ ! -e "$cfg/appearance" ]; then
   mangos-appearance light
 fi
 
+# One-time additions to the dock of existing users after an update.
+add_dock_item() { # name desktop-id
+  [ -e "$cfg/dock-added-$1" ] && return 0
+  [ -f "/usr/share/applications/$2.desktop" ] || return 0
+  l=$HOME/.config/plank/dock1/launchers
+  if [ -d "$l" ] && [ ! -e "$l/$1.dockitem" ]; then
+    printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/%s.desktop\n' "$2" > "$l/$1.dockitem"
+    items=$(dconf read /net/launchpad/plank/docks/dock1/dock-items 2>/dev/null || true)
+    case "$items" in
+      *"'$1.dockitem'"*|"") ;;
+      *) dconf write /net/launchpad/plank/docks/dock1/dock-items "$(echo "$items" | sed "s/'xfce4-terminal.dockitem'/'$1.dockitem', 'xfce4-terminal.dockitem'/")" ;;
+    esac
+  fi
+  touch "$cfg/dock-added-$1"
+}
+add_dock_item mangos-store mangos-store
+
 if $live; then
   # Never lock or blank the screen in the live session (e.g. while installing).
   xfconf-query -c xfce4-session -p /shutdown/LockScreen -n -t bool -s false

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Store…
+Name[it]=Store…
+Exec=mangos-store
+Icon=mangos-store
+Terminal=false

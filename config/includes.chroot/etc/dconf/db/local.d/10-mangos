@@ -11,7 +11,7 @@ show-dock-item=false
 lock-items=false
 pressure-reveal=false
 current-workspace-only=false
-dock-items=['mangos-launchpad.dockitem', 'thunar.dockitem', 'firefox-esr.dockitem', 'artcraft-launcher.dockitem', 'wordcraft.dockitem', 'pdfcraft.dockitem', 'photocraft.dockitem', 'vlc.dockitem', 'xfce4-terminal.dockitem', 'xfce-settings-manager.dockitem']
+dock-items=['mangos-launchpad.dockitem', 'thunar.dockitem', 'firefox-esr.dockitem', 'artcraft-launcher.dockitem', 'wordcraft.dockitem', 'pdfcraft.dockitem', 'photocraft.dockitem', 'vlc.dockitem', 'mangos-store.dockitem', 'xfce4-terminal.dockitem', 'xfce-settings-manager.dockitem']
 
 [org/gnome/desktop/interface]
 color-scheme='prefer-light'

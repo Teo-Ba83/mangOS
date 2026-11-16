@@ -17,6 +17,7 @@ ArtCraft creative apps preinstalled.
 | Trackpad | tap to click, natural scrolling, two-finger right click |
 | Wi-Fi | Broadcom BCM4321 (MacBook3,1): `wl` driver prebuilt with DKMS (offline); `b43` + firmware as reserve; *Wi-Fi Check* tool |
 | Apps | ArtCraft launcher, WordCraft, PdfCraft, PhotoCraft, Firefox ESR, VLC |
+| Store | MangOS Store: 2,000+ Debian apps from the AppStream catalog, Mac-style layout, Get/Open, updates |
 | Installer | Calamares with a macOS-installer style theme; BIOS, EFI64 and **EFI32** |
 | Languages | English default, Italian included; more from *Settings > Language* |
 

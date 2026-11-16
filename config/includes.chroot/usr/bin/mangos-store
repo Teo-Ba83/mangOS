@@ -1,0 +1,586 @@
+#!/usr/bin/python3
+"""MangOS Store: find, install and update Debian software.
+
+Layout inspired by the Mac's app store (sidebar with search and sections,
+featured card, rows of apps with a round "Get" button, app pages), built on
+Debian's AppStream catalog. Installing/removing goes through
+/usr/lib/mangos/store-helper (pkexec, administrator password)."""
+import html, json, os, re, subprocess, threading, urllib.request
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("AppStream", "1.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import AppStream as AS, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+HELPER = "/usr/lib/mangos/store-helper"
+CACHE = os.path.join(GLib.get_user_cache_dir(), "mangos-store")
+
+# Sections of the sidebar: (id, English, Italian, icon, AppStream categories)
+SECTIONS = [
+    ("discover", "Discover", "Scopri", "starred-symbolic", None),
+    ("create", "Create", "Crea", "applications-graphics-symbolic", ["Graphics", "AudioVideo", "Audio", "Video"]),
+    ("work", "Work", "Lavora", "x-office-document-symbolic", ["Office", "Finance", "Education", "Science"]),
+    ("play", "Play", "Gioca", "applications-games-symbolic", ["Game"]),
+    ("develop", "Develop", "Sviluppa", "applications-engineering-symbolic", ["Development"]),
+    ("utilities", "Utilities", "Utility", "applications-utilities-symbolic", ["Utility", "System", "Network"]),
+    ("updates", "Updates", "Aggiornamenti", "software-update-available-symbolic", None),
+]
+# Well-known apps shown first in each section (Debian package names).
+POPULAR = {
+    "create": ["gimp", "inkscape", "krita", "darktable", "kdenlive", "shotcut", "obs-studio", "audacity",
+               "blender", "rawtherapee", "digikam", "ardour", "openshot-qt", "pinta", "mypaint", "handbrake",
+               "lmms", "musescore3", "shotwell", "celluloid"],
+    "work": ["thunderbird", "libreoffice-writer", "calibre", "xournalpp", "scribus", "gnucash", "zim",
+             "homebank", "evolution", "planner", "kmymoney", "anki", "stellarium", "marble", "geogebra"],
+    "play": ["supertuxkart", "0ad", "minetest", "supertux", "pingus", "frozen-bubble", "neverball",
+             "gnome-mines", "aisleriot", "gnome-chess", "kpat", "openttd", "wesnoth", "hedgewars"],
+    "develop": ["geany", "gnome-builder", "codeblocks", "meld", "git-cola", "gitg", "glade", "kate",
+                "qtcreator", "sqlitebrowser", "ghex", "d-feet"],
+    "utilities": ["keepassxc", "gparted", "gnome-disk-utility", "timeshift", "baobab", "transmission-gtk",
+                  "filezilla", "remmina", "gnome-calculator", "simple-scan", "evince", "bleachbit",
+                  "hardinfo", "syncthing-gtk", "deja-dup"],
+}
+CATEGORY_NAMES = {
+    "AudioVideo": ("Audio & Video", "Audio e video"), "Audio": ("Audio", "Audio"), "Video": ("Video", "Video"),
+    "Graphics": ("Graphics", "Grafica"), "Office": ("Office", "Ufficio"), "Game": ("Games", "Giochi"),
+    "Development": ("Developer Tools", "Sviluppo"), "Education": ("Education", "Istruzione"),
+    "Science": ("Science", "Scienza"), "Network": ("Internet", "Internet"), "Utility": ("Utilities", "Utility"),
+    "System": ("System", "Sistema"), "Finance": ("Finance", "Finanza"), "Settings": ("Settings", "Impostazioni"),
+}
+# Apps shown first on the Discover page (Debian package names).
+FEATURED = {
+    "essentials": ["gimp", "inkscape", "krita", "darktable", "shotwell", "audacity", "kdenlive",
+                   "obs-studio", "thunderbird", "transmission-gtk", "gnome-calculator", "keepassxc",
+                   "simple-scan", "evince", "rhythmbox", "celluloid"],
+    "play": ["supertuxkart", "0ad", "pingus", "gnome-mines", "aisleriot", "gnome-chess",
+             "frozen-bubble", "neverball", "minetest", "supertux"],
+}
+
+CSS = b"""
+.store-sidebar { background-color: alpha(currentColor, 0.045); border-right: 1px solid alpha(currentColor, 0.10); }
+.store-sidebar row { border-radius: 7px; margin: 1px 8px; padding: 6px 8px; }
+.store-sidebar row:selected { background-color: alpha(currentColor, 0.12); color: inherit; }
+.store-title { font-size: 28px; font-weight: 800; }
+.store-subtitle { font-size: 13px; opacity: 0.6; }
+.store-section { font-size: 19px; font-weight: 700; }
+.store-name { font-weight: 600; }
+.store-dim { opacity: 0.62; font-size: 12px; }
+.store-get { border-radius: 999px; padding: 2px 16px; font-weight: 700; min-height: 0;
+             background: alpha(currentColor, 0.09); border: none; color: #0A84FF; }
+.store-get:hover { background: alpha(currentColor, 0.16); }
+.store-get.primary { background: #0A84FF; color: white; }
+.store-hero { border-radius: 16px; padding: 26px; color: white;
+              background-image: linear-gradient(120deg, #F0503A, #FF8A2B 55%, #FFC24B); }
+.store-hero-title { font-size: 26px; font-weight: 800; color: white; }
+.store-hero-text { font-size: 14px; color: alpha(white, 0.92); }
+.store-hero button { border-radius: 999px; background: white; color: #E2541E; font-weight: 700; border: none; padding: 4px 18px; }
+.store-row { padding: 8px 4px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+.store-big-name { font-size: 26px; font-weight: 800; }
+.store-info-key { opacity: 0.55; font-size: 11px; }
+.store-info-val { font-weight: 600; }
+.store-shot { border-radius: 10px; }
+.store-back { border: none; background: none; color: #0A84FF; font-weight: 600; }
+"""
+
+
+def markup_from_appstream(desc):
+    """AppStream description markup (<p>, <ul><li>) -> Pango text."""
+    if not desc:
+        return ""
+    text = re.sub(r"\s+", " ", desc)
+    text = re.sub(r"<li>\s*", "\n  •  ", text)
+    text = re.sub(r"</p>\s*", "\n\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    return html.escape(html.unescape(text).strip(), quote=False)
+
+
+class Catalog:
+    def __init__(self):
+        self.pool = AS.Pool()
+        self.apps = []
+        self.by_pkg = {}
+        self.installed = set()
+        self.protected = set()
+        self.reload()
+
+    def reload(self):
+        try:
+            self.pool.load(None)
+            box = self.pool.get_components()
+            comps = [box.index_safe(i) for i in range(box.get_size())]
+        except GLib.Error:
+            comps = []
+        seen, apps = set(), []
+        for c in comps:
+            if c.get_kind() != AS.ComponentKind.DESKTOP_APP or not c.get_pkgname():
+                continue
+            if c.get_pkgname() in seen:
+                continue
+            seen.add(c.get_pkgname())
+            apps.append(c)
+        apps.sort(key=lambda c: (c.get_name() or "").lower())
+        self.apps = apps
+        self.by_pkg = {c.get_pkgname(): c for c in apps}
+        self.refresh_installed()
+
+    def refresh_installed(self):
+        out = subprocess.run(["dpkg-query", "-W", "-f=${Package} ${Status}\n"],
+                             capture_output=True, text=True).stdout
+        self.installed = {l.split()[0] for l in out.splitlines() if l.endswith("install ok installed")}
+        deps = subprocess.run(["dpkg-query", "-W", "-f=${Depends}", "mangos-system"],
+                              capture_output=True, text=True).stdout
+        self.protected = {d.strip().split()[0] for d in deps.split(",") if d.strip()} | {"mangos-system"}
+
+    def in_categories(self, cats, first=(), limit=150):
+        res = [c for c in self.apps if set(c.get_categories()) & set(cats) and self.icon_file(c, 64)]
+        top = [self.by_pkg[p] for p in first if p in self.by_pkg]
+        rest = [c for c in res if c not in top]
+        return (top + rest)[:limit]
+
+    def search(self, text, limit=90):
+        t = text.lower()
+        res = [c for c in self.apps if t in (c.get_name() or "").lower() or t in (c.get_summary() or "").lower()
+               or t in c.get_pkgname()]
+        res.sort(key=lambda c: (not (c.get_name() or "").lower().startswith(t), not self.icon_file(c, 64)))
+        return res[:limit]
+
+    @staticmethod
+    def icon_file(c, size):
+        best = None
+        for ic in c.get_icons():
+            if ic.get_kind() == AS.IconKind.CACHED and ic.get_filename() and os.path.exists(ic.get_filename()):
+                if ic.get_width() >= size:
+                    return ic.get_filename()
+                best = ic.get_filename()
+        return best
+
+    @staticmethod
+    def stock_icon(c):
+        for ic in c.get_icons():
+            if ic.get_kind() == AS.IconKind.STOCK and ic.get_name():
+                return ic.get_name()
+        return "application-x-executable"
+
+
+def app_icon(c, size):
+    f = Catalog.icon_file(c, size)
+    if f:
+        try:
+            return Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(f, size, size, True))
+        except GLib.Error:
+            pass
+    img = Gtk.Image.new_from_icon_name(Catalog.stock_icon(c), Gtk.IconSize.DIALOG)
+    img.set_pixel_size(size)
+    return img
+
+
+class Store(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Store")
+        self.set_default_size(1080, 720)
+        self.set_icon_name("mangos-store")
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.cat = Catalog()
+        self.busy = False
+        self.buttons = {}   # pkgname -> list of Get buttons to refresh
+        prov = Gtk.CssProvider(); prov.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, 801)
+
+        root = Gtk.Box(); self.add(root)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        side.set_size_request(220, -1); side.get_style_context().add_class("store-sidebar")
+        root.pack_start(side, False, False, 0)
+        self.search = Gtk.SearchEntry(placeholder_text=tr("Search", "Cerca"), margin=12, margin_bottom=4)
+        self.search.connect("search-changed", self.on_search)
+        side.pack_start(self.search, False, False, 0)
+        self.menu = Gtk.ListBox(); self.menu.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.menu.get_style_context().add_class("store-sidebar")
+        for sid, en, it, icon, _ in SECTIONS:
+            row = Gtk.ListBoxRow(); row.sid = sid
+            b = Gtk.Box(spacing=10)
+            b.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
+            b.pack_start(Gtk.Label(label=tr(en, it), xalign=0), True, True, 0)
+            row.add(b); self.menu.add(row)
+        self.menu.connect("row-selected", self.on_section)
+        side.pack_start(self.menu, False, False, 0)
+
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); root.pack_start(right, True, True, 0)
+        self.progress = Gtk.ProgressBar(no_show_all=True); right.pack_start(self.progress, False, False, 0)
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=150)
+        right.pack_start(self.stack, True, True, 0)
+        self.history = []
+        self.connect("destroy", Gtk.main_quit)
+        self.menu.select_row(self.menu.get_row_at_index(0))
+
+    # ------------------------------------------------------------ pages
+    def page(self, widget, name):
+        old = self.stack.get_child_by_name(name)
+        if old:
+            self.stack.remove(old)
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        sc.add(widget); sc.show_all()
+        self.stack.add_named(sc, name); self.stack.set_visible_child_name(name)
+
+    def column(self):
+        return Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=30, margin_top=24)
+
+    def header(self, box, title, subtitle=None):
+        t = Gtk.Label(label=title, xalign=0); t.get_style_context().add_class("store-title")
+        box.pack_start(t, False, False, 0)
+        if subtitle:
+            s = Gtk.Label(label=subtitle, xalign=0); s.get_style_context().add_class("store-subtitle")
+            box.pack_start(s, False, False, 0)
+
+    def empty_catalog(self, box):
+        lab = Gtk.Label(wrap=True, xalign=0, label=tr(
+            "The app catalog has not been downloaded yet. It needs an internet connection.",
+            "Il catalogo delle app non è ancora stato scaricato. Serve una connessione a internet."))
+        box.pack_start(lab, False, False, 0)
+        b = Gtk.Button(label=tr("Download the catalog", "Scarica il catalogo"), halign=Gtk.Align.START)
+        b.get_style_context().add_class("store-get"); b.get_style_context().add_class("primary")
+        b.connect("clicked", lambda *_: self.run_helper(["refresh"], self.after_refresh))
+        box.pack_start(b, False, False, 0)
+
+    def grid(self, apps):
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
+                           min_children_per_line=1, max_children_per_line=3,
+                           column_spacing=26, row_spacing=0)
+        for c in apps:
+            flow.add(self.app_row(c))
+        return flow
+
+    def app_row(self, c):
+        ev = Gtk.EventBox(); row = Gtk.Box(spacing=12); row.get_style_context().add_class("store-row")
+        ev.add(row); ev.set_size_request(250, -1)
+        row.pack_start(app_icon(c, 56), False, False, 0)
+        txt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        n = Gtk.Label(label=c.get_name(), xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=22)
+        n.get_style_context().add_class("store-name")
+        s = Gtk.Label(label=c.get_summary() or "", xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=26)
+        s.get_style_context().add_class("store-dim")
+        txt.pack_start(n, False, False, 0); txt.pack_start(s, False, False, 0)
+        row.pack_start(txt, True, True, 0)
+        row.pack_end(self.get_button(c), False, False, 0)
+        ev.connect("button-press-event", lambda *_: self.show_app(c))
+        return ev
+
+    def get_button(self, c, primary=False):
+        b = Gtk.Button(valign=Gtk.Align.CENTER); b.get_style_context().add_class("store-get")
+        if primary:
+            b.get_style_context().add_class("primary")
+        b.app = c
+        b.connect("clicked", self.on_get)
+        self.buttons.setdefault(c.get_pkgname(), []).append(b)
+        self.update_button(b)
+        return b
+
+    def update_button(self, b):
+        inst = b.app.get_pkgname() in self.cat.installed
+        b.set_label(tr("Open", "Apri") if inst else tr("Get", "Ottieni"))
+        b.set_sensitive(not self.busy or inst)
+
+    def refresh_buttons(self):
+        for lst in self.buttons.values():
+            for b in lst:
+                self.update_button(b)
+
+    # ------------------------------------------------------------ sections
+    def on_section(self, _lb, row):
+        if not row:
+            return
+        self.search.set_text("")
+        self.buttons = {}
+        sec = next(s for s in SECTIONS if s[0] == row.sid)
+        if row.sid == "discover":
+            self.show_discover()
+        elif row.sid == "updates":
+            self.show_updates()
+        else:
+            box = self.column(); self.header(box, tr(sec[1], sec[2]))
+            if not self.cat.apps:
+                self.empty_catalog(box)
+            else:
+                box.pack_start(self.grid(self.cat.in_categories(sec[4], POPULAR.get(row.sid, ()))), False, False, 0)
+            self.page(box, row.sid)
+
+    def show_discover(self):
+        box = self.column()
+        self.header(box, tr("Discover", "Scopri"),
+                    GLib.DateTime.new_now_local().format("%A %e %B").strip().upper())
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8); hero.get_style_context().add_class("store-hero")
+        hb = Gtk.Box(spacing=18); hero.pack_start(hb, True, True, 0)
+        img = Gtk.Image.new_from_icon_name("mangos-store", Gtk.IconSize.DIALOG); img.set_pixel_size(96)
+        hb.pack_start(img, False, False, 0)
+        ht = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
+        a = Gtk.Label(label=tr("ArtCraft: the creative apps", "ArtCraft: le app creative"), xalign=0)
+        a.get_style_context().add_class("store-hero-title")
+        b = Gtk.Label(xalign=0, wrap=True, label=tr(
+            "WordCraft, PdfCraft and PhotoCraft are already on your Mac. Get the rest of the suite from the ArtCraft launcher.",
+            "WordCraft, PdfCraft e PhotoCraft sono già sul tuo Mac. Il resto della suite è nel launcher ArtCraft."))
+        b.get_style_context().add_class("store-hero-text")
+        btn = Gtk.Button(label=tr("Open", "Apri"), halign=Gtk.Align.START)
+        btn.connect("clicked", lambda *_: subprocess.Popen(["mangos-open-artcraft"]))
+        ht.pack_start(a, False, False, 0); ht.pack_start(b, False, False, 0); ht.pack_start(btn, False, False, 6)
+        hb.pack_start(ht, True, True, 0)
+        box.pack_start(hero, False, False, 4)
+        if not self.cat.apps:
+            self.empty_catalog(box); self.page(box, "discover"); return
+        for key, en, it in (("essentials", "Essential apps", "App essenziali"), ("play", "Games to try", "Giochi da provare")):
+            apps = [self.cat.by_pkg[p] for p in FEATURED[key] if p in self.cat.by_pkg]
+            if not apps:
+                continue
+            t = Gtk.Label(label=tr(en, it), xalign=0, margin_top=12); t.get_style_context().add_class("store-section")
+            box.pack_start(t, False, False, 0); box.pack_start(self.grid(apps[:12]), False, False, 0)
+        self.page(box, "discover")
+
+    def on_search(self, entry):
+        text = entry.get_text().strip()
+        if not text:
+            row = self.menu.get_selected_row()
+            if row:
+                self.on_section(self.menu, row)
+            return
+        self.buttons = {}
+        box = self.column(); self.header(box, tr("Results for “%s”", "Risultati per “%s”") % text)
+        res = self.cat.search(text)
+        if res:
+            box.pack_start(self.grid(res), False, False, 0)
+        else:
+            box.pack_start(Gtk.Label(label=tr("No apps found.", "Nessuna app trovata."), xalign=0), False, False, 0)
+        self.page(box, "search")
+
+    # ------------------------------------------------------------ app page
+    def show_app(self, c):
+        self.buttons = {}
+        box = self.column()
+        back = Gtk.Button(label="‹ " + tr("Back", "Indietro"), halign=Gtk.Align.START)
+        back.get_style_context().add_class("store-back")
+        back.connect("clicked", lambda *_: self.on_section(self.menu, self.menu.get_selected_row()))
+        box.pack_start(back, False, False, 0)
+        top = Gtk.Box(spacing=22); box.pack_start(top, False, False, 0)
+        top.pack_start(app_icon(c, 128), False, False, 0)
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        n = Gtk.Label(label=c.get_name(), xalign=0, wrap=True); n.get_style_context().add_class("store-big-name")
+        s = Gtk.Label(label=c.get_summary() or "", xalign=0, wrap=True); s.get_style_context().add_class("store-subtitle")
+        dev = c.get_developer().get_name() if c.get_developer() else ""
+        d = Gtk.Label(label=dev, xalign=0); d.get_style_context().add_class("store-dim")
+        info.pack_start(n, False, False, 0); info.pack_start(s, False, False, 0); info.pack_start(d, False, False, 0)
+        acts = Gtk.Box(spacing=10, margin_top=10)
+        acts.pack_start(self.get_button(c, primary=True), False, False, 0)
+        pkg = c.get_pkgname()
+        if pkg in self.cat.installed and pkg not in self.cat.protected:
+            rm = Gtk.Button(label=tr("Remove", "Rimuovi")); rm.get_style_context().add_class("store-get")
+            rm.connect("clicked", lambda *_: self.confirm_remove(c))
+            acts.pack_start(rm, False, False, 0)
+        info.pack_start(acts, False, False, 0)
+        top.pack_start(info, True, True, 0)
+
+        facts = Gtk.Box(spacing=36, margin_top=8)
+        for k, v in self.package_facts(pkg, c):
+            fb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            a = Gtk.Label(label=k.upper(), xalign=0); a.get_style_context().add_class("store-info-key")
+            b = Gtk.Label(label=v, xalign=0); b.get_style_context().add_class("store-info-val")
+            fb.pack_start(a, False, False, 0); fb.pack_start(b, False, False, 0)
+            facts.pack_start(fb, False, False, 0)
+        box.pack_start(facts, False, False, 0)
+        box.pack_start(Gtk.Separator(), False, False, 4)
+
+        shots = Gtk.Box(spacing=14)
+        sw = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, min_content_height=10)
+        sw.add(shots); box.pack_start(sw, False, False, 0)
+        self.load_screenshots(c, shots, sw)
+
+        desc = Gtk.Label(xalign=0, wrap=True, selectable=True, max_width_chars=90)
+        desc.set_markup(markup_from_appstream(c.get_description()))
+        box.pack_start(desc, False, False, 0)
+        self.page(box, "app")
+
+    def package_facts(self, pkg, c):
+        out = subprocess.run(["apt-cache", "show", "--no-all-versions", pkg], capture_output=True, text=True).stdout
+        f = dict(re.findall(r"^(Version|Installed-Size|Section): (.*)$", out, re.M))
+        facts = []
+        if "Installed-Size" in f:
+            kb = int(f["Installed-Size"])
+            facts.append((tr("Size", "Dimensioni"), "%.0f MB" % (kb / 1024) if kb >= 1024 else "%d KB" % kb))
+        if "Version" in f:
+            facts.append((tr("Version", "Versione"), f["Version"].split("-")[0].split(":")[-1]))
+        cats = [x for x in c.get_categories() if x not in ("GTK", "Qt", "KDE", "GNOME")]
+        named = [CATEGORY_NAMES[x] for x in cats if x in CATEGORY_NAMES]
+        if named:
+            facts.append((tr("Category", "Categoria"), tr(*named[0])))
+        lic = c.get_project_license()
+        if lic:
+            facts.append((tr("License", "Licenza"), lic.split(" ")[0][:20]))
+        return facts
+
+    def load_screenshots(self, c, box, sw):
+        urls = []
+        for shot in c.get_screenshots_all()[:4]:
+            imgs = shot.get_images()
+            best = None
+            for im in imgs:
+                if im.get_kind() == AS.ImageKind.THUMBNAIL and 300 <= im.get_width() <= 760:
+                    best = im
+            best = best or (imgs[0] if imgs else None)
+            if best and best.get_url():
+                urls.append(best.get_url())
+        if not urls:
+            sw.hide(); return
+
+        def work():
+            os.makedirs(CACHE, exist_ok=True)
+            for u in urls:
+                path = os.path.join(CACHE, re.sub(r"[^A-Za-z0-9._-]", "_", u)[-120:])
+                try:
+                    if not os.path.exists(path):
+                        with urllib.request.urlopen(u, timeout=15) as r, open(path, "wb") as f:
+                            f.write(r.read(4_000_000))
+                    GLib.idle_add(add, path)
+                except Exception:
+                    pass
+
+        def add(path):
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, -1, 260, True)
+                img = Gtk.Image.new_from_pixbuf(pb); img.get_style_context().add_class("store-shot")
+                box.pack_start(img, False, False, 0); img.show(); sw.set_min_content_height(270)
+            except GLib.Error:
+                pass
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ updates
+    def show_updates(self):
+        box = self.column(); self.header(box, tr("Updates", "Aggiornamenti"))
+        status = Gtk.Label(label=tr("Checking…", "Controllo in corso…"), xalign=0)
+        box.pack_start(status, False, False, 0)
+        listbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); box.pack_start(listbox, False, False, 0)
+        allb = Gtk.Button(label=tr("Update All", "Aggiorna tutto"), halign=Gtk.Align.START, no_show_all=True)
+        allb.get_style_context().add_class("store-get"); allb.get_style_context().add_class("primary")
+        allb.connect("clicked", lambda *_: self.run_helper(["upgrade"], lambda ok: self.show_updates()))
+        box.pack_start(allb, False, False, 6)
+        self.page(box, "updates")
+
+        def work():
+            mangos = subprocess.run(["/usr/lib/mangos/mangos-updater", "check"], capture_output=True, text=True)
+            apt = subprocess.run(["apt", "list", "--upgradable"], capture_output=True, text=True,
+                                 env=dict(os.environ, LANG="C")).stdout
+            pk = [l.split("/")[0] for l in apt.splitlines() if "/" in l and "upgradable" in l]
+            GLib.idle_add(done, mangos.returncode, mangos.stdout.strip(), pk)
+
+        def done(rc, msg, pk):
+            items = []   # (icon widget, name, subtitle)
+            if rc == 10:
+                im = Gtk.Image.new_from_icon_name("mangos-logo", Gtk.IconSize.DND); im.set_pixel_size(44)
+                items.append((im, "MangOS", tr("New version ", "Nuova versione ") + msg.split("->")[-1].strip()))
+            for p in pk:
+                c = self.cat.by_pkg.get(p)
+                if c:
+                    items.append((app_icon(c, 44), c.get_name(), c.get_summary() or p))
+                else:
+                    im = Gtk.Image.new_from_icon_name("package-x-generic", Gtk.IconSize.DND); im.set_pixel_size(44)
+                    items.append((im, p, tr("System component", "Componente di sistema")))
+            if not items:
+                status.set_text(tr("MangOS and your apps are up to date.", "MangOS e le tue app sono aggiornati."))
+                return False
+            status.set_text(tr("%d updates available", "%d aggiornamenti disponibili") % len(items))
+            for im, name, sub in items[:80]:
+                r = Gtk.Box(spacing=12); r.get_style_context().add_class("store-row")
+                r.pack_start(im, False, False, 0)
+                t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+                a = Gtk.Label(label=name, xalign=0); a.get_style_context().add_class("store-name")
+                b = Gtk.Label(label=sub, xalign=0, ellipsize=Pango.EllipsizeMode.END); b.get_style_context().add_class("store-dim")
+                t.pack_start(a, False, False, 0); t.pack_start(b, False, False, 0)
+                r.pack_start(t, True, True, 0); listbox.pack_start(r, False, False, 0)
+            listbox.show_all(); allb.show()
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ actions
+    def on_get(self, b):
+        c = b.app; pkg = c.get_pkgname()
+        if pkg in self.cat.installed:
+            self.launch(c); return
+        self.run_helper(["install", pkg], lambda ok: self.after_change(c, ok), button=b)
+
+    def launch(self, c):
+        lid = None
+        la = c.get_launchable(AS.LaunchableKind.DESKTOP_ID)
+        if la and la.get_entries():
+            lid = la.get_entries()[0]
+        for cand in filter(None, [lid, c.get_id(), c.get_id() + ".desktop"]):
+            try:
+                info = Gio.DesktopAppInfo.new(cand)
+            except TypeError:
+                info = None
+            if info:
+                info.launch([], None); return
+        subprocess.Popen(["mangos-launchpad"])
+
+    def confirm_remove(self, c):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.NONE,
+                              text=tr("Remove “%s”?", "Rimuovere “%s”?") % c.get_name())
+        d.add_button(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL)
+        d.add_button(tr("Remove", "Rimuovi"), Gtk.ResponseType.OK)
+        if d.run() == Gtk.ResponseType.OK:
+            self.run_helper(["remove", c.get_pkgname()], lambda ok: self.after_change(c, ok))
+        d.destroy()
+
+    def after_change(self, c, ok):
+        self.cat.refresh_installed()
+        if self.stack.get_visible_child_name() == "app":
+            self.show_app(c)
+        else:
+            self.refresh_buttons()
+
+    def after_refresh(self, ok):
+        self.cat.reload()
+        self.on_section(self.menu, self.menu.get_selected_row())
+
+    def run_helper(self, args, done, button=None):
+        if self.busy:
+            return
+        self.busy = True; self.refresh_buttons()
+        self.progress.set_fraction(0); self.progress.show()
+        if button:
+            button.set_label("…")
+        proc = Gio.Subprocess.new(["pkexec", HELPER] + args,
+                                  Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+        log = []
+
+        def read_line(src, res):
+            line, _ = src.read_line_finish_utf8(res)
+            if line is None:
+                proc.wait_async(None, finished); return
+            log.append(line)
+            m = re.match(r"^(pm|dl)status:[^:]*:([\d.]+):", line)
+            if m:
+                frac = float(m.group(2)) / 100
+                self.progress.set_fraction(frac)
+                if button:
+                    button.set_label("%d%%" % (frac * 100))
+            src.read_line_async(GLib.PRIORITY_DEFAULT, None, read_line)
+
+        def finished(p, res):
+            p.wait_finish(res)
+            ok = p.get_successful()
+            self.busy = False; self.progress.hide()
+            if not ok and p.get_exit_status() != 126:   # 126: password dialog dismissed
+                d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
+                                      buttons=Gtk.ButtonsType.CLOSE,
+                                      text=tr("Something went wrong", "Qualcosa non ha funzionato"))
+                d.format_secondary_text("\n".join(l for l in log if not l.startswith(("pmstatus", "dlstatus")))[-600:])
+                d.run(); d.destroy()
+            done(ok)
+            self.refresh_buttons()
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, read_line)
+
+
+if __name__ == "__main__":
+    load_css()
+    Store().show_all()
+    Gtk.main()

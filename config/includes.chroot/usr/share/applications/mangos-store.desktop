@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Store
+Comment=Find and install apps
+Comment[it]=Trova e installa app
+Exec=mangos-store
+Icon=mangos-store
+Terminal=false
+Categories=System;PackageManager;X-MangOS-Launchpad;
+Keywords=store;apps;install;software;negozio;app;installa;
+StartupNotify=true
