@@ -25,9 +25,28 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   F4 or the dock icon instead.
 - **Fan control** uses `mbpfan`; **brightness keys** use `brightnessctl`.
   **Untested on hardware.**
-- **Wi-Fi.** A1181 Wi-Fi cards are Atheros (ath9k, no firmware needed).
-  Some units were upgraded with Broadcom cards; those may need
-  `broadcom-sta-dkms` from the internet after installing.
+- **Wi-Fi (Broadcom BCM4321/BCM4328, PCI 14e4:4328 on the MacBook3,1).**
+  MangOS uses the proprietary `wl` driver (broadcom-sta-dkms), already
+  compiled for the ISO's kernel, so it works offline. `b43`, `b43legacy`,
+  `ssb`, `bcma`, `brcmsmac`, `brcm80211` and `b44` are blacklisted because
+  they conflict with `wl` (`b44`, Broadcom Ethernet, would load `ssb` and grab
+  the Wi-Fi card; it is not used on MacBooks). The open `b43` driver and its
+  firmware stay installed as a reserve: choose **MangOS (Wi-Fi: b43 driver)**
+  in the boot menu, or run `sudo mangos-wifi-driver b43` (and
+  `sudo mangos-wifi-driver wl` to go back). `b43` support for the BCM4321
+  (N-PHY) is less mature than `wl`.
+  QEMU cannot emulate this card: the driver was built and loaded in a VM, but
+  real Wi-Fi traffic is **untested on hardware**. The **Wi-Fi Check** icon on
+  the live desktop prints `lspci -nn` and the Wi-Fi state, and saves it to
+  `~/mangos-wifi-check.txt`.
+- When `wl` loads, the kernel logs "Unpatched return thunk in use" with a
+  warning trace: the closed-source part of the driver predates current CPU
+  mitigations. It is harmless (Broadcom/Debian note to ignore it on older
+  CPUs) and the driver keeps working.
+- **Kernel headers and a compiler are installed** (about 200 MB) so DKMS can
+  rebuild `wl` when Debian updates the kernel. DKMS signs modules with a key
+  it creates on each computer; the key from the build is deleted, never
+  shipped. Secure Boot is not relevant on these Macs.
 
 ## Look and feel
 

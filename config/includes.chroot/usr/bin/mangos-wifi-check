@@ -1,0 +1,85 @@
+#!/bin/sh
+# MangOS Wi-Fi check: prints lspci -nn and the state of the Wi-Fi (driver,
+# modules, firmware, rfkill, interfaces, NetworkManager, kernel messages).
+# A copy is saved to ~/mangos-wifi-check.txt (or /run/mangos when run as root).
+export PATH="$PATH:/usr/sbin:/sbin"   # modinfo, rfkill, dkms live in sbin
+if [ "$(id -u)" = 0 ]; then OUT=/run/mangos/wifi-check.txt; else OUT=$HOME/mangos-wifi-check.txt; fi
+mkdir -p "${OUT%/*}"
+SUDO=""; [ "$(id -u)" = 0 ] || { sudo -n true 2>/dev/null && SUDO="sudo -n"; }
+
+sec() { printf '\n=== %s ===\n' "$1"; }
+{
+echo "MangOS Wi-Fi check  $(date '+%Y-%m-%d %H:%M')  kernel $(uname -r)"
+echo "Computer: $(cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name 2>/dev/null | tr '\n' ' ')"
+
+sec "lspci -nn"
+lspci -nn
+
+sec "Network controllers and the driver in use (lspci -nnk)"
+lspci -nnk | awk '/^[0-9a-f]/{show=($0 ~ /Network controller|Ethernet controller|Wireless/)} show'
+
+BCM=$(lspci -nn | grep -i 'network controller' | grep -io '14e4:[0-9a-f]\{4\}' | head -1)
+sec "Broadcom Wi-Fi"
+if [ -n "$BCM" ]; then
+  echo "Found Broadcom Wi-Fi [$BCM]"
+  case "$BCM" in
+    14e4:4328|14e4:4329|14e4:432a|14e4:432b|14e4:432c|14e4:432d|14e4:4311|14e4:4312|14e4:4313|14e4:4315|14e4:4357|14e4:4358|14e4:4359|14e4:4365|14e4:43a0|14e4:43b1)
+      echo "Supported by the wl driver (default in MangOS)." ;;
+    *) echo "Not in the wl list: if Wi-Fi does not work, try b43 (boot menu entry 'Wi-Fi: b43 driver')." ;;
+  esac
+else
+  echo "No Broadcom Wi-Fi controller found."
+fi
+
+sec "Driver choice"
+mangos-wifi-driver status 2>/dev/null
+grep -o 'mangos\.wifi=[a-z0-9]*' /proc/cmdline | sed 's/^/kernel command line: /'
+echo "blacklist ($(ls /etc/modprobe.d/mangos-broadcom.conf 2>/dev/null)):"
+grep -h '^blacklist' /etc/modprobe.d/mangos-broadcom.conf 2>/dev/null | tr '\n' ' '; echo
+
+sec "Loaded Wi-Fi modules"
+lsmod | awk 'NR==1 || $1 ~ /^(wl|b43|b43legacy|ssb|bcma|brcmsmac|brcmutil|cfg80211|lib80211|mac80211|ath9k|ath5k|iwlwifi)$/'
+
+sec "wl driver (DKMS)"
+modinfo -F filename wl 2>/dev/null | sed 's/^/module:  /'
+dkms status broadcom-sta 2>/dev/null
+
+sec "b43 firmware (reserve driver)"
+n=$(ls /usr/lib/firmware/b43 2>/dev/null | wc -l)
+echo "$n files in /usr/lib/firmware/b43"
+
+sec "rfkill"
+rfkill list 2>/dev/null || echo "rfkill not available"
+
+sec "Wireless interfaces"
+iw dev 2>/dev/null | grep -E 'Interface|ssid|type|channel' || echo "no wireless interface"
+ip -br link 2>/dev/null
+
+sec "NetworkManager"
+nmcli radio all 2>/dev/null
+nmcli -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null
+nmcli -f IN-USE,SSID,SIGNAL,SECURITY device wifi list 2>/dev/null | head -12
+
+sec "Kernel messages (wl, b43, ssb, bcma, firmware)"
+if [ -n "$SUDO" ] || [ "$(id -u)" = 0 ]; then
+  $SUDO dmesg 2>/dev/null | grep -iE '\bwl\b|wl_|b43|ssb|bcma|brcm|wlan|wlp|80211' | grep -v systemd | tail -25
+else
+  journalctl -k -b --no-pager 2>/dev/null | grep -iE '\bwl\b|wl_|b43|ssb|bcma|brcm|wlan|wlp|80211' | grep -v systemd | tail -25 \
+    || echo "(needs administrator rights)"
+fi
+
+sec "Summary"
+WIF=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}')
+if [ -n "$WIF" ]; then
+  drv=$(basename "$(readlink -f /sys/class/net/$WIF/device/driver 2>/dev/null)" 2>/dev/null)
+  echo "OK: Wi-Fi interface $WIF is present (driver: ${drv:-unknown})."
+elif [ -n "$BCM" ]; then
+  echo "PROBLEM: Broadcom Wi-Fi found but no wireless interface."
+  echo "Try the other driver: restart and choose 'MangOS (Wi-Fi: b43 driver)',"
+  echo "or run: sudo mangos-wifi-driver b43"
+else
+  echo "No Wi-Fi interface and no Broadcom Wi-Fi controller found."
+fi
+} 2>&1 | tee "$OUT"
+echo
+echo "Saved to $OUT"

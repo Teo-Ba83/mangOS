@@ -1,0 +1,76 @@
+#!/bin/sh
+# Chooses the driver for Broadcom Wi-Fi (MacBook3,1: BCM4321, PCI 14e4:4328).
+#   wl   proprietary Broadcom STA driver (default, built with DKMS)
+#   b43  open-source driver with the bundled firmware (reserve)
+#
+#   mangos-wifi-driver status
+#   sudo mangos-wifi-driver wl|b43            switch now and keep it
+#   sudo mangos-wifi-driver --runtime wl|b43  switch now, until reboot
+#   mangos-wifi-driver --write-config wl|b43  only rewrite the modprobe file
+# At boot, "mangos.wifi=b43" (or =wl) on the kernel command line switches for
+# that boot only; the live boot menu has an entry for it.
+set -e
+CONF=/etc/modprobe.d/mangos-broadcom.conf
+STATE=/etc/mangos/wifi-driver
+WL_STACK="wl"
+B43_STACK="b43 b43legacy bcma ssb brcmsmac"
+
+write_config() { # mode
+  mkdir -p "${STATE%/*}"
+  if [ "$1" = b43 ]; then
+    cat > "$CONF" <<C
+# Managed by mangos-wifi-driver: Broadcom Wi-Fi uses the open b43 driver.
+blacklist wl
+blacklist brcmsmac
+C
+  else
+    cat > "$CONF" <<C
+# Managed by mangos-wifi-driver: Broadcom Wi-Fi uses the proprietary wl driver.
+# These drivers conflict with wl (b44 would pull in ssb and grab the card).
+# b43 and its firmware stay installed as a reserve: sudo mangos-wifi-driver b43
+blacklist b43
+blacklist b43legacy
+blacklist ssb
+blacklist bcma
+blacklist brcmsmac
+blacklist brcm80211
+blacklist b44
+C
+  fi
+}
+
+swap_modules() { # mode
+  if [ "$1" = b43 ]; then
+    modprobe -r $WL_STACK 2>/dev/null || true
+    # A blacklist only stops automatic loading; explicit modprobe still works.
+    modprobe ssb 2>/dev/null || true
+    modprobe bcma 2>/dev/null || true
+    modprobe b43
+  else
+    modprobe -r b43 b43legacy brcmsmac 2>/dev/null || true
+    modprobe -r bcma ssb 2>/dev/null || true
+    modprobe wl
+  fi
+}
+
+need_root() { [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }; }
+check_mode() { case "$1" in wl|b43) ;; *) echo "mode must be wl or b43" >&2; exit 2;; esac; }
+
+case "${1:-status}" in
+  status)
+    echo "configured: $(cat $STATE 2>/dev/null || echo wl)"
+    echo "loaded:     $(lsmod | awk '$1 ~ /^(wl|b43|b43legacy|ssb|bcma|brcmsmac)$/ {printf "%s ", $1}')"
+    ;;
+  --write-config) check_mode "$2"; need_root; write_config "$2"; echo "$2" > "$STATE" ;;
+  --runtime) check_mode "$2"; need_root; swap_modules "$2"; echo "Wi-Fi driver for this boot: $2" ;;
+  --boot)
+    # Called by mangos-wifi-driver.service: honour mangos.wifi= on the kernel command line.
+    mode=$(sed -n 's/.*mangos\.wifi=\([a-z0-9]*\).*/\1/p' /proc/cmdline)
+    [ -n "$mode" ] || exit 0
+    check_mode "$mode"; swap_modules "$mode"; echo "Wi-Fi driver for this boot (mangos.wifi): $mode" ;;
+  wl|b43)
+    need_root; write_config "$1"; echo "$1" > "$STATE"; swap_modules "$1"
+    if ! grep -qw boot=live /proc/cmdline; then update-initramfs -u >/dev/null 2>&1 || true; fi
+    echo "Wi-Fi driver set to $1 (kept after reboot)" ;;
+  *) sed -n '2,12p' "$0"; exit 2 ;;
+esac

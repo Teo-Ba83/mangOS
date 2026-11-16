@@ -57,6 +57,17 @@ firmware-atheros
 firmware-realtek
 firmware-iwlwifi
 firmware-brcm80211
+# Broadcom BCM4321/BCM4322 (MacBook3,1 Wi-Fi, PCI 14e4:4328): proprietary wl
+# driver built with DKMS at image build time (works offline), headers and
+# compiler kept so DKMS rebuilds it on kernel updates. b43 firmware for the
+# reserve driver is extracted by build.sh (scripts/fetch-b43-firmware.sh).
+linux-headers-amd64
+dkms
+broadcom-sta-dkms
+b43-fwcutter
+wireless-tools
+gcc
+make
 firmware-intel-sound
 firmware-sof-signed
 firmware-libertas

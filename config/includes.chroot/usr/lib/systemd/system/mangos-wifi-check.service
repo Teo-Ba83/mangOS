@@ -1,0 +1,13 @@
+[Unit]
+Description=MangOS: Wi-Fi check on the live system (lspci -nn and Wi-Fi state)
+ConditionKernelCommandLine=boot=live
+After=NetworkManager.service mangos-wifi-driver.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 15
+ExecStart=/usr/bin/mangos-wifi-check
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

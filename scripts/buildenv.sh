@@ -16,7 +16,7 @@ BUILD_PACKAGES="live-build debootstrap dctrl-tools xorriso git ca-certificates c
  cpio zstd squashfs-tools mtools dosfstools
  grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin grub-efi-amd64-signed shim-signed
  syslinux syslinux-common isolinux syslinux-efi
- librsvg2-bin imagemagick gtk-update-icon-cache sassc libglib2.0-dev-bin libxml2-utils sudo python3"
+ librsvg2-bin imagemagick gtk-update-icon-cache b43-fwcutter bzip2 sassc libglib2.0-dev-bin libxml2-utils sudo python3"
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 command -v debootstrap >/dev/null || { echo "install debootstrap first" >&2; exit 1; }

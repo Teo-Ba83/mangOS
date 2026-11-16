@@ -15,6 +15,7 @@ ArtCraft creative apps preinstalled.
 | Launchpad | full-screen app grid with search (rofi): dock icon, Cmd+Space or F4 |
 | Keyboard | Command key works like on a Mac (keyd): Cmd+C/V/X/Z/Q/W/Tab/Space |
 | Trackpad | tap to click, natural scrolling, two-finger right click |
+| Wi-Fi | Broadcom BCM4321 (MacBook3,1): `wl` driver prebuilt with DKMS (offline); `b43` + firmware as reserve; *Wi-Fi Check* tool |
 | Apps | ArtCraft launcher, WordCraft, PdfCraft, PhotoCraft, Firefox ESR, VLC |
 | Installer | Calamares with a macOS-installer style theme; BIOS, EFI64 and **EFI32** |
 | Languages | English default, Italian included; more from *Settings > Language* |
@@ -31,7 +32,7 @@ ArtCraft creative apps preinstalled.
 On Debian 13:
 ```sh
 sudo apt install live-build debootstrap dctrl-tools xorriso git curl rsync librsvg2-bin imagemagick \
-  gtk-update-icon-cache sassc libglib2.0-dev-bin libxml2-utils sudo \
+  gtk-update-icon-cache b43-fwcutter bzip2 sassc libglib2.0-dev-bin libxml2-utils sudo \
   grub-efi-amd64-bin grub-efi-ia32-bin grub-efi-amd64-signed shim-signed grub-pc-bin \
   syslinux isolinux syslinux-efi mtools dosfstools squashfs-tools
 sudo ./build.sh

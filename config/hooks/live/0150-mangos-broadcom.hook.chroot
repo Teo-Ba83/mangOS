@@ -1,0 +1,32 @@
+#!/bin/sh
+# Broadcom Wi-Fi (MacBook3,1: BCM4321, 14e4:4328): make sure the wl module is
+# built for every installed kernel, set the default driver (wl) and the
+# blacklist, keep b43 + firmware as reserve. Fails the build if wl is missing.
+set -e
+# Our own blacklist (mangos-wifi-driver) replaces the package's one, so that
+# switching to b43 is possible.
+if [ -e /etc/modprobe.d/broadcom-sta-dkms.conf ] && ! dpkg-divert --list /etc/modprobe.d/broadcom-sta-dkms.conf | grep -q local; then
+  dpkg-divert --local --rename --divert /etc/modprobe.d/broadcom-sta-dkms.conf.mangos-disabled \
+    --add /etc/modprobe.d/broadcom-sta-dkms.conf
+fi
+/usr/bin/mangos-wifi-driver --write-config wl
+systemctl enable mangos-wifi-driver.service mangos-wifi-check.service
+
+for kdir in /lib/modules/*; do
+  k=${kdir##*/}
+  [ -d "$kdir/build" ] || { echo "no headers for kernel $k" >&2; exit 1; }
+  dkms autoinstall -k "$k"
+  f=$(modinfo -k "$k" -F filename wl 2>/dev/null || true)
+  [ -n "$f" ] || { echo "wl module was not built for $k" >&2; exit 1; }
+  echo "wl for $k: $f ($(modinfo -k "$k" -F version wl))"
+done
+dkms status broadcom-sta
+
+# The b43 firmware comes from build.sh (overlay); refuse to ship without it.
+n=$(ls /usr/lib/firmware/b43 2>/dev/null | wc -l)
+[ "$n" -gt 10 ] || { echo "b43 firmware missing (/usr/lib/firmware/b43)" >&2; exit 1; }
+echo "b43 firmware: $n files"
+
+# DKMS created a module-signing key pair during the build. Never ship the
+# private key: each installed system makes its own on the next DKMS build.
+rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub

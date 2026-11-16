@@ -36,7 +36,14 @@ Rufus in "DD image" mode.
      **Windows** instead.
 3. The MangOS logo appears, then the live desktop starts (user `mangos`,
    no password).
-4. To install, double-click **Install MangOS** on the desktop.
+4. Check the Wi-Fi: double-click **Wi-Fi Check** on the desktop. It prints
+   `lspci -nn` and the Wi-Fi state and saves them to `~/mangos-wifi-check.txt`
+   (the same check also runs at boot: `journalctl -u mangos-wifi-check`).
+   If the Broadcom card shows no wireless interface, restart and choose
+   **MangOS (Wi-Fi: b43 driver)** in the boot menu.
+5. To install, double-click **Install MangOS** on the desktop. The driver
+   choice is kept: on the installed system switch with
+   `sudo mangos-wifi-driver b43` or `sudo mangos-wifi-driver wl`.
 
 The installer works out which firmware the Mac booted with (BIOS, 32-bit EFI,
 64-bit EFI) and installs the matching GRUB, including the fallback file

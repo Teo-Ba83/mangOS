@@ -14,18 +14,24 @@ if [ -f boot/grub/grub.cfg ]; then
     mv boot/grub/grub.cfg.new boot/grub/grub.cfg
     sed -i 's|^\(\s*linux\s.*boot=live.*\)$|\1 ${mangos_efi32}|' boot/grub/grub.cfg
   fi
-  # Duplicate the first MangOS entry as an Italian one
+  # Extra entries copied from the first one: Italian, and Wi-Fi with b43
   python3 - boot/grub/grub.cfg "$IT" <<'PY'
 import re, sys
 p, it = sys.argv[1], sys.argv[2]
 s = open(p).read()
 m = re.search(r'menuentry "MangOS"[^{]*\{.*?\n\}', s, re.S)
-if m and "Italiano" not in s:
-    e = m.group(0)
-    e_it = e.replace('menuentry "MangOS"', 'menuentry "MangOS (Italiano)"', 1)
-    e_it = re.sub(r"locales=\S+", "", e_it); e_it = re.sub(r"keyboard-layouts=\S+", "", e_it)
-    e_it = re.sub(r"(linux\s+\S+)", r"\1 " + it, e_it, count=1)
-    s = s[:m.end()] + "\n" + e_it + s[m.end():]
+extra = [("MangOS (Italiano)", it, True), ("MangOS (Wi-Fi: b43 driver)", "mangos.wifi=b43", False)]
+if m:
+    add = ""
+    for label, args, strip_locale in extra:
+        if label in s:
+            continue
+        e = m.group(0).replace('menuentry "MangOS"', 'menuentry "%s"' % label, 1)
+        if strip_locale:
+            e = re.sub(r"locales=\S+", "", e); e = re.sub(r"keyboard-layouts=\S+", "", e)
+        e = re.sub(r"(linux\s+\S+)", r"\1 " + args, e, count=1)
+        add += "\n" + e
+    s = s[:m.end()] + add + s[m.end():]
     open(p, "w").write(s)
 PY
 fi
@@ -35,17 +41,27 @@ fi
 for f in isolinux/live.cfg syslinux/live.cfg; do
   [ -f "$f" ] || continue
   sed -i 's/Live system (amd64 fail-safe mode)/MangOS (safe graphics)/; s/Live system (amd64)/MangOS/; s/Live system/MangOS/g' "$f"
-  if ! grep -q Italiano "$f"; then
-    awk -v it="$IT" '
-      /^label live-amd64$/ && !done { inblk=1 }
-      { print; if (inblk) buf = buf $0 "\n" }
-      inblk && /^[ \t]*append/ { inblk=0; done=1
-        gsub(/label live-amd64/, "label live-amd64-it", buf)
-        gsub(/menu label .*\n/, "menu label MangOS (Italiano)\n", buf)
-        gsub(/locales=[^ \n]*/, "", buf); gsub(/keyboard-layouts=[^ \n]*/, "", buf)
-        sub(/append /, "append " it " ", buf); sub(/menu default\n/, "", buf)
-        printf "\n%s", buf }' "$f" > "$f.new" && mv "$f.new" "$f"
-  fi
+  python3 - "$f" "$IT" <<'PY'
+import re, sys
+p, it = sys.argv[1], sys.argv[2]
+s = open(p).read()
+m = re.search(r"label live-amd64\n.*?\n\s*append[^\n]*\n", s, re.S)
+extra = [("live-amd64-it", "MangOS (Italiano)", it, True), ("live-amd64-b43", "MangOS (Wi-Fi: b43 driver)", "mangos.wifi=b43", False)]
+if m:
+    add = ""
+    for lab, title, args, strip_locale in extra:
+        if "label " + lab + "\n" in s:
+            continue
+        e = m.group(0).replace("label live-amd64\n", "label %s\n" % lab, 1)
+        e = re.sub(r"menu label [^\n]*", "menu label " + title, e, count=1)
+        e = re.sub(r"\s*menu default\n", "\n", e)
+        if strip_locale:
+            e = re.sub(r"locales=\S+", "", e); e = re.sub(r"keyboard-layouts=\S+", "", e)
+        e = re.sub(r"append ", "append " + args + " ", e, count=1)
+        add += "\n" + e
+    s = s[:m.end()] + add + s[m.end():]
+    open(p, "w").write(s)
+PY
 done
 for f in isolinux/menu.cfg syslinux/menu.cfg isolinux/stdmenu.cfg; do
   [ -f "$f" ] && sed -i 's/^menu title .*/menu title MangOS/' "$f"

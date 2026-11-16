@@ -27,7 +27,7 @@ log() { printf '\n\033[1;33m==> %s\033[0m\n' "$*"; }
 
 [ "$(id -u)" = 0 ] || { echo "build.sh must run as root" >&2; exit 1; }
 command -v lb >/dev/null || { echo "live-build missing: apt install live-build (see scripts/buildenv.sh)" >&2; exit 1; }
-for t in git curl rsvg-convert convert sassc glib-compile-resources xmllint xorriso mksquashfs; do
+for t in git curl b43-fwcutter bzip2 rsvg-convert convert sassc glib-compile-resources xmllint xorriso mksquashfs; do
   command -v $t >/dev/null || { echo "missing tool: $t (see scripts/buildenv.sh for the package list)" >&2; exit 1; }
 done
 
@@ -57,6 +57,9 @@ mkdir -p "$WORK/config/bootloaders"
 
 log "Building WhiteSur themes"
 "$ROOT/scripts/fetch-themes.sh" "$OVL" "$CACHE"
+
+log "Extracting b43 firmware (Broadcom Wi-Fi reserve driver)"
+"$ROOT/scripts/fetch-b43-firmware.sh" "$OVL" "$CACHE/b43"
 
 log "Fetching ArtCraft packages"
 rm -rf "$WORK/config/packages.chroot"; mkdir -p "$WORK/config/packages.chroot"

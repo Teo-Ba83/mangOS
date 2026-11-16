@@ -28,6 +28,14 @@ if $live; then
     gio set --type=string "$f" metadata::xfce-exe-checksum "$(sha256sum "$f" | cut -d' ' -f1)" 2>/dev/null || true
     touch "$f"
   fi
+  # Wi-Fi check icon on the live desktop (lspci -nn + Wi-Fi state)
+  w=$d/mangos-wifi-check.desktop
+  if [ ! -e "$w" ]; then
+    cp /usr/share/applications/mangos-wifi-check.desktop "$w"; chmod +x "$w"
+    gio set --type=string "$w" metadata::trusted true 2>/dev/null || true
+    gio set --type=string "$w" metadata::xfce-exe-checksum "$(sha256sum "$w" | cut -d' ' -f1)" 2>/dev/null || true
+    touch "$w"
+  fi
 elif [ ! -e "$cfg/welcome-done" ]; then
   mangos-welcome &
 fi

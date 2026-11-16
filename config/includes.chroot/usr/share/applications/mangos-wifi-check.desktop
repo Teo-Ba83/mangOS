@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Wi-Fi Check
+Name[it]=Controllo Wi-Fi
+Comment=Show the network hardware (lspci -nn) and the Wi-Fi state
+Comment[it]=Mostra l'hardware di rete (lspci -nn) e lo stato del Wi-Fi
+Exec=xfce4-terminal --hold --geometry=110x40 --title="Wi-Fi Check" -x mangos-wifi-check
+Icon=network-wireless
+Terminal=false
+Categories=Network;System;Utility;
+Keywords=wifi;wireless;broadcom;lspci;rete;
