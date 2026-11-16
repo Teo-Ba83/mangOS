@@ -19,6 +19,7 @@ lb config noauto \
   --security true \
   --updates true \
   --apt-recommends false \
+  --apt-options "--yes -o Acquire::Retries=5 -o Acquire::https::Timeout=60" \
   --binary-images iso-hybrid \
   --bootloaders "syslinux,grub-efi" \
   --uefi-secure-boot auto \
