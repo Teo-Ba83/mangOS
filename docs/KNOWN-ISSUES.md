@@ -7,8 +7,15 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 - **32-bit EFI.** MacBook2,1/3,1/4,1 firmware is 32-bit EFI on a 64-bit CPU.
   The ISO ships `BOOTIA32.EFI` and the installer installs `grub-efi-ia32` on
-  these machines. Verified in a VM with 32-bit OVMF; **untested on hardware**.
+  these machines. Verified in a VM with 32-bit OVMF (live boot, full install,
+  installed system starting on its own); **untested on hardware**.
   Fallback: choose **Windows** (legacy BIOS) in the Option-key boot picker.
+- **`efi=noruntime` on 32-bit EFI.** The 64-bit kernel crashes when it calls
+  32-bit EFI runtime services, so MangOS turns them off on those machines
+  (automatically, only there). Consequence: Linux cannot read or change EFI
+  variables, so the boot disk is chosen with the Option key or *Startup Disk*
+  in macOS, not from Linux. The installer always writes the fallback loader
+  `EFI/BOOT/BOOTIA32.EFI`, which the Mac firmware finds by itself.
 - **Intel GMA 950 / X3100 graphics** only offer OpenGL 1.4-2.1. The XFCE
   compositor (shadows) is fine on them, but apps that need OpenGL 3+ fall back
   to software rendering (slower). See ArtCraft below.
@@ -26,6 +33,8 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 - Window **bottom corners are square**: the XFCE window manager rounds only the
   title bar. Full rounded corners would need picom, too heavy for GMA graphics.
+- With no window focused, the global menu shows "Xfdesktop" where macOS
+  shows "Finder".
 - The **global menu** shows menus for GTK apps (Thunar, Terminal, settings);
   Firefox, VLC and the ArtCraft apps keep their menus inside the window.
 - **Cmd+C in Terminal** sends Ctrl+C (interrupt), as on any Linux; copy with
@@ -38,8 +47,10 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 - The ArtCraft `.deb` files are downloaded from GitHub at build time. If the
   build machine cannot reach GitHub, `build.sh` warns and builds the ISO
-  **without** them (or fails with `MANGOS_REQUIRE_ARTCRAFT=1`). The test ISO
-  built for this release did not include them: see `docs/TESTING.md`.
+  **without** them (or fails with `MANGOS_REQUIRE_ARTCRAFT=1`). The test ISOs
+  built so far did **not** include them, because the build machine had no
+  access to GitHub releases: see `docs/TESTING.md`. Build on a machine with
+  normal internet access to get them.
 - ArtCraft apps are egui (Rust) applications using wgpu/OpenGL. On GMA 950 /
   X3100 they will probably run through Mesa's software renderer (llvmpipe),
   which works but is slow on a Core 2 Duo. **Untested on hardware.**
@@ -48,6 +59,8 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 ## Installer
 
+- Under emulation (no KVM) the install took about 30 minutes; on the
+  MacBook's SSD it should be much faster, but this is **untested on hardware**.
 - The partition page preselects **Erase disk**; *Manual partitioning* is the
   last choice on the same page (Calamares cannot hide it behind a button).
 - Installation is offline; updates are fetched after the first boot by the

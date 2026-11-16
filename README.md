@@ -19,6 +19,13 @@ ArtCraft creative apps preinstalled.
 | Installer | Calamares with a macOS-installer style theme; BIOS, EFI64 and **EFI32** |
 | Languages | English default, Italian included; more from *Settings > Language* |
 
+## Screenshots (from VM tests)
+
+| | |
+|---|---|
+| ![Desktop](docs/screenshots/27-final-efi32-live-desktop.png) | ![Logo menu](docs/screenshots/07-logo-menu.png) |
+| ![Launchpad](docs/screenshots/24-launchpad-dark.png) | ![Installer](docs/screenshots/11-installer-1-welcome.png) |
+
 ## Build
 
 On Debian 13:
