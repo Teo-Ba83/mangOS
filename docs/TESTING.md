@@ -41,8 +41,8 @@ Legend: ✅ passed in VM · ⚠️ passed with a known limit · ❌ not working 
 | Wi-Fi | Live check printing `lspci -nn` and the Wi-Fi state | ✅ | [desktop icon](screenshots/38-live-desktop-wifi-icon.png) · [report](screenshots/33-wifi-check-lspci.png) · [runs at boot](screenshots/37-wifi-check-at-boot.png) |
 | Wi-Fi | Real BCM4321 association with an access point | ⏳ | QEMU cannot emulate the card; needs the MacBook3,1 |
 | 4.1 | Firefox ESR, VLC, Thunar, terminal, NetworkManager, PipeWire, CUPS, unattended-upgrades | ✅ | in the image; dock and Launchpad entries |
-| 4.2 | ArtCraft `.deb`s downloaded and SHA-256 checked | ⏳ | `scripts/fetch-artcraft.sh` is in place, but the build machine could not reach GitHub releases, so the test ISOs were built **without** ArtCraft |
-| 4.3 | WordCraft, PdfCraft, PhotoCraft start | ⏳ | needs an ISO built with network access to GitHub |
+| 4.2 | ArtCraft `.deb`s downloaded, SHA-256 checked and installed | ✅ | GitHub Actions build #5: launcher 0.19.2, WordCraft 0.18.1, PdfCraft 0.21.1, PhotoCraft 0.23.1 installed (build stops if one is missing); release `v0.1.0-build.5`, 1.82 GB |
+| 4.3 | WordCraft, PdfCraft, PhotoCraft start | ⏳ | installed in build #5 but not started yet in a VM or on the Mac |
 | 5.1 | Calamares install in a VM (32-bit EFI, empty 20 GB disk) | ✅ | [welcome](screenshots/11-installer-1-welcome.png) → [location](screenshots/12-installer-2-location.png) → [keyboard](screenshots/13-installer-3-keyboard.png) → [disk](screenshots/14-installer-4-disk.png) → [user](screenshots/15-installer-5-user.png) → [summary](screenshots/16-installer-6-summary.png) → [confirm](screenshots/17-installer-7-confirm.png) → [slideshow](screenshots/18-installer-8-slideshow.png) → [done](screenshots/19-installer-9-done.png) |
 | 5.2 | Installed system starts by itself | ✅ in VM | 32-bit EFI with empty NVRAM boots `EFI/boot/bootia32.efi` → [login](screenshots/21-installed-efi32-login.png) · [ESP contents](screenshots/20-installed-esp-bootia32.png) |
 | 5.2 | Installation on the real MacBook | ⏳ | needs hardware |

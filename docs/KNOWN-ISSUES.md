@@ -66,10 +66,10 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 - The ArtCraft `.deb` files are downloaded from GitHub at build time. If the
   build machine cannot reach GitHub, `build.sh` warns and builds the ISO
-  **without** them (or fails with `MANGOS_REQUIRE_ARTCRAFT=1`). The test ISOs
-  built so far did **not** include them, because the build machine had no
-  access to GitHub releases: see `docs/TESTING.md`. Build on a machine with
-  normal internet access to get them.
+  **without** them (or fails with `MANGOS_REQUIRE_ARTCRAFT=1`). The ISOs built
+  by GitHub Actions (release `v0.1.0-build.5` and later) include them; the
+  earlier `v0.1.0-build.3` release does **not**, although its notes list the
+  downloads (live-build skipped the packages because of their file names).
 - ArtCraft apps are egui (Rust) applications using wgpu/OpenGL. On GMA 950 /
   X3100 they will probably run through Mesa's software renderer (llvmpipe),
   which works but is slow on a Core 2 Duo. **Untested on hardware.**
