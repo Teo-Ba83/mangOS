@@ -69,7 +69,16 @@ elif ! "$ROOT/scripts/fetch-artcraft.sh" "$CACHE/artcraft"; then
   if [ "${MANGOS_REQUIRE_ARTCRAFT:-0}" = 1 ]; then echo "ArtCraft fetch failed" >&2; exit 1; fi
   echo "WARNING: some ArtCraft packages are missing; the ISO will not include them." >&2
 fi
-cp "$CACHE"/artcraft/*.deb "$WORK/config/packages.chroot/" 2>/dev/null || true
+# live-build only installs local packages named name_version_arch.deb; the
+# ArtCraft release files are named e.g. wordcraft-0.18.1-linux-x86_64.deb.
+EXPECTED_PKGS=""
+for deb in "$CACHE"/artcraft/*.deb; do
+  [ -e "$deb" ] || continue
+  pkg=$(dpkg-deb -f "$deb" Package); ver=$(dpkg-deb -f "$deb" Version); arch=$(dpkg-deb -f "$deb" Architecture)
+  cp "$deb" "$WORK/config/packages.chroot/${pkg}_${ver//:/%3a}_${arch}.deb"
+  EXPECTED_PKGS="$EXPECTED_PKGS $pkg"
+  echo "ArtCraft package: $pkg $ver ($arch)"
+done
 ls "$WORK/config/packages.chroot"
 
 cd "$WORK"
@@ -91,6 +100,15 @@ lb chroot
 if [ -e chroot/usr/local/share/ca-certificates/mangos-build-ca.crt ]; then
   echo "ERROR: build CA still present in chroot" >&2; exit 1
 fi
+
+# Every ArtCraft package that was downloaded must really be installed.
+for pkg in $EXPECTED_PKGS; do
+  if chroot chroot dpkg-query -W -f='${Status} ${Version}\n' "$pkg" 2>/dev/null | grep -q '^install ok installed'; then
+    echo "ArtCraft installed: $pkg $(chroot chroot dpkg-query -W -f='${Version}' "$pkg")"
+  else
+    echo "ERROR: ArtCraft package $pkg was downloaded but is not installed in the image" >&2; exit 1
+  fi
+done
 
 log "lb binary"
 lb binary

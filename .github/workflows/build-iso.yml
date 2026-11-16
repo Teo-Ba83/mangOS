@@ -45,7 +45,7 @@ jobs:
           set -o pipefail
           sudo env MANGOS_BUILDENV=/srv/mangos-buildenv \
             MANGOS_REQUIRE_ARTCRAFT=${{ inputs.require_artcraft && '1' || '0' }} \
-            scripts/buildenv.sh build --clean 2>&1 | tee build.log | grep --line-buffered -E '==>|^E: |ERROR|WARNING|ArtCraft|sha256|b43 firmware|wl for'
+            scripts/buildenv.sh build --clean 2>&1 | tee build.log | grep --line-buffered -E '==>|^E: |^W: .*[Ll]ocal packages|ERROR|WARNING|ArtCraft|sha256|b43 firmware|wl for|craft'
           ls -la out/
           df -h /
 
@@ -69,9 +69,9 @@ jobs:
             cat out/*.sha256
             echo '```'
             echo
-            echo "**ArtCraft packages in this build:**"
+            echo "**ArtCraft apps installed in this ISO:**"
             echo '```'
-            grep -E '^ArtCraft: |sha256 OK|ERROR|WARNING' build.log | grep -iE 'artcraft|sha256 OK|craft' || echo "(none)"
+            grep -E '^ArtCraft installed: ' build.log || echo "(none: ArtCraft is NOT in this ISO)"
             echo '```'
             echo
             echo "Test build: tested in virtual machines only, not yet on a real MacBook. See docs/KNOWN-ISSUES.md."
