@@ -1,0 +1,45 @@
+#!/bin/sh
+# Live boot menu: MangOS names, an Italian entry, no startup beep.
+set -e
+[ -d binary ] && cd binary
+IT="locales=it_IT.UTF-8 keyboard-layouts=it"
+
+if [ -f boot/grub/grub.cfg ]; then
+  sed -i 's/Live system (autodetect)/MangOS/; s/Live system (amd64 fail-safe mode)/MangOS (safe graphics)/; s/Live system (amd64)/MangOS/; s/Live system/MangOS/g' boot/grub/grub.cfg
+  # Duplicate the first MangOS entry as an Italian one
+  python3 - boot/grub/grub.cfg "$IT" <<'PY'
+import re, sys
+p, it = sys.argv[1], sys.argv[2]
+s = open(p).read()
+m = re.search(r'menuentry "MangOS"[^{]*\{.*?\n\}', s, re.S)
+if m and "Italiano" not in s:
+    e = m.group(0)
+    e_it = e.replace('menuentry "MangOS"', 'menuentry "MangOS (Italiano)"', 1)
+    e_it = re.sub(r"locales=\S+", "", e_it); e_it = re.sub(r"keyboard-layouts=\S+", "", e_it)
+    e_it = re.sub(r"(linux\s+\S+)", r"\1 " + it, e_it, count=1)
+    s = s[:m.end()] + "\n" + e_it + s[m.end():]
+    open(p, "w").write(s)
+PY
+fi
+[ -f boot/grub/live-theme/theme.txt ] && sed -i 's/^title-text:.*/title-text: ""/' boot/grub/live-theme/theme.txt
+[ -f boot/grub/config.cfg ] && sed -i '/^insmod play$/d; /^play /d' boot/grub/config.cfg
+
+for f in isolinux/live.cfg syslinux/live.cfg; do
+  [ -f "$f" ] || continue
+  sed -i 's/Live system (amd64 fail-safe mode)/MangOS (safe graphics)/; s/Live system (amd64)/MangOS/; s/Live system/MangOS/g' "$f"
+  if ! grep -q Italiano "$f"; then
+    awk -v it="$IT" '
+      /^label live-amd64$/ && !done { inblk=1 }
+      { print; if (inblk) buf = buf $0 "\n" }
+      inblk && /^[ \t]*append/ { inblk=0; done=1
+        gsub(/label live-amd64/, "label live-amd64-it", buf)
+        gsub(/menu label .*\n/, "menu label MangOS (Italiano)\n", buf)
+        gsub(/locales=[^ \n]*/, "", buf); gsub(/keyboard-layouts=[^ \n]*/, "", buf)
+        sub(/append /, "append " it " ", buf); sub(/menu default\n/, "", buf)
+        printf "\n%s", buf }' "$f" > "$f.new" && mv "$f.new" "$f"
+  fi
+done
+for f in isolinux/menu.cfg syslinux/menu.cfg isolinux/stdmenu.cfg; do
+  [ -f "$f" ] && sed -i 's/^menu title .*/menu title MangOS/' "$f"
+done
+echo "boot menu branded"

@@ -171,7 +171,6 @@ ipp-usb
 unattended-upgrades
 apt-listchanges
 apt-config-auto-update
-software-properties-gtk
 
 # ------------------------------------------------------------ languages
 # English default, Italian ready; other languages can be added later.

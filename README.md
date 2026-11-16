@@ -23,7 +23,7 @@ ArtCraft creative apps preinstalled.
 
 On Debian 13:
 ```sh
-sudo apt install live-build debootstrap xorriso git curl rsync librsvg2-bin imagemagick \
+sudo apt install live-build debootstrap dctrl-tools xorriso git curl rsync librsvg2-bin imagemagick \
   gtk-update-icon-cache sassc libglib2.0-dev-bin libxml2-utils sudo \
   grub-efi-amd64-bin grub-efi-ia32-bin grub-efi-amd64-signed shim-signed grub-pc-bin \
   syslinux isolinux syslinux-efi mtools dosfstools squashfs-tools

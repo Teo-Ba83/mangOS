@@ -4,8 +4,9 @@ set -e
 VERSION=0.1.0; CODENAME=alphonso; DEBVER=$(cat /etc/debian_version)
 
 # Divert base-files' os-release so Debian upgrades keep the MangOS identity.
-if [ ! -e /usr/lib/os-release.debian ]; then
-  dpkg-divert --quiet --local --rename --add /usr/lib/os-release
+if ! dpkg-divert --list /usr/lib/os-release | grep -q local; then
+  dpkg-divert --quiet --local --no-rename --divert /usr/lib/os-release.debian --add /usr/lib/os-release
+  cp -p /usr/lib/os-release /usr/lib/os-release.debian
 fi
 cat > /usr/lib/os-release <<OS
 PRETTY_NAME="MangOS $VERSION ($CODENAME)"

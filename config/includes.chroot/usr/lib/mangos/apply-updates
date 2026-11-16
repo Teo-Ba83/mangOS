@@ -1,0 +1,6 @@
+#!/bin/sh
+# Root helper for mangos-update (run through pkexec).
+rm -f /run/mangos-update.ok
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q && apt-get -y -q -o Dpkg::Options::=--force-confold full-upgrade \
+  && touch /run/mangos-update.ok

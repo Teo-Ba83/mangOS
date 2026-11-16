@@ -47,6 +47,13 @@ OVL=$WORK/config/includes.chroot
 log "Rendering logo, icons and wallpapers"
 "$ROOT/branding/logo/make-logo.sh" "$OVL"
 "$ROOT/scripts/make-wallpapers.sh" "$OVL/usr/share/backgrounds/mangos"
+# Boot menu background (GRUB + isolinux): dark, mango logo at the top.
+mkdir -p "$WORK/config/bootloaders"
+{ echo '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">'
+  echo '<rect width="800" height="600" fill="#1d1d1f"/>'
+  echo '<svg x="352" y="40" width="96" height="96" viewBox="0 0 512 512">'
+  sed -n '/<defs>/,/<\/svg>/p' "$ROOT/branding/logo/mangos-logo.svg" | sed '$d'
+  echo '</svg></svg>'; } > "$WORK/config/bootloaders/splash.svg"
 
 log "Building WhiteSur themes"
 "$ROOT/scripts/fetch-themes.sh" "$OVL" "$CACHE"

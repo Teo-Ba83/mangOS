@@ -15,8 +15,9 @@ update-desktop-database -q /usr/share/applications || true
 update-alternatives --set x-session-manager /usr/bin/xfce4-session || true
 update-alternatives --set x-www-browser /usr/bin/firefox-esr || true
 update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper || true
-update-alternatives --set x-cursor-theme /usr/share/icons/WhiteSur-cursors/cursor.theme 2>/dev/null || \
-  update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme /usr/share/icons/WhiteSur-cursors/cursor.theme 90
+update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme \
+  /usr/share/icons/WhiteSur-cursors/index.theme 90
+update-alternatives --set x-cursor-theme /usr/share/icons/WhiteSur-cursors/index.theme
 
 # Global menu: load the appmenu GTK module in every X session.
 cat > /etc/X11/Xsession.d/85mangos-appmenu <<'XS'

@@ -68,7 +68,7 @@ class About(Gtk.Window):
         more = Gtk.Button(label=tr("System Report…", "Resoconto di sistema…"))
         more.connect("clicked", lambda *_: subprocess.Popen(["xfce4-taskmanager"]))
         upd = Gtk.Button(label=tr("Software Update…", "Aggiornamento software…"))
-        upd.connect("clicked", lambda *_: subprocess.Popen(["software-properties-gtk", "--open-tab=2"]))
+        upd.connect("clicked", lambda *_: subprocess.Popen(["mangos-update"]))
         bb.pack_start(more, False, False, 0); bb.pack_start(upd, False, False, 0)
         right.pack_start(bb, False, False, 0)
         self.connect("destroy", Gtk.main_quit)

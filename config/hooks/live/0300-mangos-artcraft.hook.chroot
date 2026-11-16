@@ -7,8 +7,9 @@ STATUS=/usr/share/mangos/artcraft-status
 : > $STATUS
 
 find_desktop() { # pattern -> desktop file id
-  f=$(grep -l -i -E "^Exec=.*$1" $APPS/*.desktop 2>/dev/null | head -1)
-  [ -n "$f" ] && basename "$f" .desktop
+  f=$(grep -l -i -E "^Exec=.*$1" $APPS/*.desktop 2>/dev/null | head -1 || true)
+  if [ -n "$f" ]; then basename "$f" .desktop; fi
+  return 0
 }
 
 L=/etc/skel/.config/plank/dock1/launchers
@@ -28,14 +29,14 @@ mime=""
 for app in artcraft-launcher wordcraft pdfcraft photocraft; do
   id=$(find_desktop "$app")
   if [ -n "$id" ]; then
-    echo "$app=$id" >> $STATUS
+    echo "$(echo $app | tr - _)=$id" >> $STATUS
     dock "$app" "$id"
   else
-    echo "$app=missing" >> $STATUS
+    echo "$(echo $app | tr - _)=missing" >> $STATUS
   fi
 done
-. $STATUS 2>/dev/null || true
-add() { [ -n "$2" ] && [ "$2" != missing ] && mime="$mime$1=$2.desktop;\n"; }
+. $STATUS
+add() { if [ -n "$2" ] && [ "$2" != missing ]; then mime="$mime$1=$2.desktop;\n"; fi; return 0; }
 for t in application/pdf; do add $t "$pdfcraft"; done
 for t in application/vnd.openxmlformats-officedocument.wordprocessingml.document \
          application/msword application/vnd.oasis.opendocument.text application/rtf text/rtf; do

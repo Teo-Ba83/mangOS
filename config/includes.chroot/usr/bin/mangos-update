@@ -1,0 +1,13 @@
+#!/bin/sh
+# Software Update: refresh the package lists and install all updates.
+case "$LANG" in
+  it*) t="Aggiornamento software"; w="Ricerca e installazione degli aggiornamenti…"; ok="Il sistema è aggiornato."; ko="Aggiornamento non riuscito. Controlla la connessione a internet." ;;
+  *)   t="Software Update"; w="Checking for and installing updates…"; ok="Your system is up to date."; ko="The update failed. Check your internet connection." ;;
+esac
+pkexec /usr/lib/mangos/apply-updates | zenity --progress --pulsate --auto-close --no-cancel \
+  --title="$t" --text="$w" --width=380
+if [ -e /run/mangos-update.ok ]; then
+  zenity --info --title="$t" --text="$ok" --width=320
+else
+  zenity --error --title="$t" --text="$ko" --width=320
+fi

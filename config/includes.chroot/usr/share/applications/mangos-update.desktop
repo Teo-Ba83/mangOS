@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Software Update
+Name[it]=Aggiornamento software
+Comment=Install the latest updates
+Comment[it]=Installa gli ultimi aggiornamenti
+Exec=mangos-update
+Icon=system-software-update
+Categories=Settings;System;X-XFCE-SettingsDialog;X-XFCE-SystemSettings;
