@@ -12,7 +12,6 @@ IFACE=$1 ACTION=$2
 drv=$(basename "$(readlink "/sys/class/net/$IFACE/device/driver" 2>/dev/null)" 2>/dev/null)
 [ "$drv" = wl ] || exit 0
 [ -n "$CONNECTION_UUID" ] || exit 0
-[ -z "$(nmcli -g 802-11-wireless.band connection show uuid "$CONNECTION_UUID" 2>/dev/null)" ] || exit 0
 ssid=$(nmcli -g 802-11-wireless.ssid connection show uuid "$CONNECTION_UUID" 2>/dev/null)
 [ -n "$ssid" ] || exit 0
 esc=$(printf '%s' "$ssid" | sed 's/\\/\\\\/g; s/:/\\:/g')
@@ -21,8 +20,15 @@ while IFS= read -r line; do
   [ "${line%:*}" = "$esc" ] || continue
   chan=${line##*:}
   if [ "$chan" -ge 1 ] 2>/dev/null && [ "$chan" -le 14 ]; then
-    nmcli connection modify uuid "$CONNECTION_UUID" 802-11-wireless.band bg &&
-      logger -t mangos-wifi "network '$ssid' locked to 2.4 GHz (wl driver, dual-band network)"
+    # also other saved profiles of the same network ("Name 1" duplicates
+    # that the network menu may pick instead)
+    nmcli -t -f UUID,TYPE connection show | while IFS=: read -r u t; do
+      [ "$t" = 802-11-wireless ] || continue
+      [ "$(nmcli -g 802-11-wireless.ssid connection show uuid "$u" 2>/dev/null)" = "$ssid" ] || continue
+      [ -z "$(nmcli -g 802-11-wireless.band connection show uuid "$u" 2>/dev/null)" ] || continue
+      nmcli connection modify uuid "$u" 802-11-wireless.band bg
+    done
+    logger -t mangos-wifi "network '$ssid' locked to 2.4 GHz (wl driver, dual-band network)"
     break
   fi
 done
