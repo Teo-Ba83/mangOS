@@ -5,8 +5,12 @@ usage: xfconf-merge <overlay-dir> <target-dir>
 Every <channel>.xml in overlay-dir is merged property by property into
 target-dir/<channel>.xml (created if missing); MangOS values win, packaged
 properties we do not touch are kept.
+
+xfconf refuses a whole file when an array's <value> elements come after a
+child <property>, so values are always kept first, and files written by
+older versions of this script are repaired.
 """
-import os, sys
+import copy, os, sys
 import xml.etree.ElementTree as ET
 
 def merge(dst, src):
@@ -14,22 +18,36 @@ def merge(dst, src):
         name = sp.get("name")
         dp = next((p for p in dst.findall("property") if p.get("name") == name), None)
         if dp is None:
-            dst.append(sp)
+            dst.append(copy.deepcopy(sp))
             continue
         for k, v in sp.attrib.items():
             dp.set(k, v)
         if sp.get("type") == "array":
             for v in list(dp.findall("value")):
                 dp.remove(v)
-            for v in sp.findall("value"):
-                dp.insert(0, v)
-            # keep order as in src
-            vals = dp.findall("value")
-            for v in vals:
-                dp.remove(v)
-            for v in sp.findall("value"):
-                dp.append(v)
+            for i, v in enumerate(sp.findall("value")):
+                dp.insert(i, copy.deepcopy(v))
         merge(dp, sp)
+
+def fix_order(el):
+    vals = el.findall("value")
+    for v in vals:
+        el.remove(v)
+    for i, v in enumerate(vals):
+        el.insert(i, v)
+    for c in el.findall("property"):
+        fix_order(c)
+
+def valid(el):
+    seen_prop = False
+    for c in el:
+        if c.tag == "property":
+            seen_prop = True
+            if not valid(c):
+                return False
+        elif c.tag == "value" and seen_prop:
+            return False
+    return True
 
 src_dir, dst_dir = sys.argv[1], sys.argv[2]
 os.makedirs(dst_dir, exist_ok=True)
@@ -38,13 +56,19 @@ for fn in sorted(os.listdir(src_dir)):
         continue
     src = ET.parse(os.path.join(src_dir, fn)).getroot()
     path = os.path.join(dst_dir, fn)
+    tree, state = None, "created"
     if os.path.exists(path):
-        tree = ET.parse(path)
-        merge(tree.getroot(), src)
-        state = "merged"
-    else:
-        tree = ET.ElementTree(src)
-        state = "created"
+        try:
+            tree = ET.parse(path)
+            merge(tree.getroot(), src)
+            state = "merged"
+        except ET.ParseError:
+            tree = None
+    if tree is None:
+        tree = ET.ElementTree(copy.deepcopy(src))
+    fix_order(tree.getroot())
+    if not valid(tree.getroot()):
+        tree, state = ET.ElementTree(copy.deepcopy(src)), "reset"
     ET.indent(tree)
     tree.write(path, encoding="UTF-8", xml_declaration=True)
     print(f"xfconf: {state} {fn}")
