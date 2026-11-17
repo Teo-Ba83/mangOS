@@ -53,6 +53,16 @@ swap_modules() { # mode
   fi
 }
 
+unpin_profiles() {
+  # wl and b43 give the card different interface names; saved Wi-Fi networks
+  # tied to the old name would no longer connect (and get duplicated).
+  command -v nmcli >/dev/null || return 0
+  nmcli -t -f UUID,TYPE connection show 2>/dev/null | while IFS=: read -r u t; do
+    [ "$t" = 802-11-wireless ] && nmcli connection modify uuid "$u" connection.interface-name "" 2>/dev/null
+  done
+  return 0
+}
+
 need_root() { [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }; }
 check_mode() { case "$1" in wl|b43) ;; *) echo "mode must be wl or b43" >&2; exit 2;; esac; }
 
@@ -62,14 +72,14 @@ case "${1:-status}" in
     echo "loaded:     $(lsmod | awk '$1 ~ /^(wl|b43|b43legacy|ssb|bcma|brcmsmac)$/ {printf "%s ", $1}')"
     ;;
   --write-config) check_mode "$2"; need_root; write_config "$2"; echo "$2" > "$STATE" ;;
-  --runtime) check_mode "$2"; need_root; swap_modules "$2"; echo "Wi-Fi driver for this boot: $2" ;;
+  --runtime) check_mode "$2"; need_root; swap_modules "$2"; unpin_profiles; echo "Wi-Fi driver for this boot: $2" ;;
   --boot)
     # Called by mangos-wifi-driver.service: honour mangos.wifi= on the kernel command line.
     mode=$(sed -n 's/.*mangos\.wifi=\([a-z0-9]*\).*/\1/p' /proc/cmdline)
     [ -n "$mode" ] || exit 0
     check_mode "$mode"; swap_modules "$mode"; echo "Wi-Fi driver for this boot (mangos.wifi): $mode" ;;
   wl|b43)
-    need_root; write_config "$1"; echo "$1" > "$STATE"; swap_modules "$1"
+    need_root; write_config "$1"; echo "$1" > "$STATE"; swap_modules "$1"; unpin_profiles
     if ! grep -qw boot=live /proc/cmdline; then update-initramfs -u >/dev/null 2>&1 || true; fi
     echo "Wi-Fi driver set to $1 (kept after reboot)" ;;
   *) sed -n '2,12p' "$0"; exit 2 ;;

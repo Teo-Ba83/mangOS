@@ -47,6 +47,13 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   if that network is also on 2.4 GHz (5 GHz-only networks are left alone).
   Manually: `sudo nmcli connection modify "<name>" 802-11-wireless.band bg`;
   undo with `802-11-wireless.band ""`.
+- **Mesh systems with WPA/WPA2 mixed security** (seen with a Tenda Nova
+  Wi-Fi 5 mesh): with `wl` the Mac connects only the first time; later the
+  WPA handshake is skipped and no address arrives, even on 2.4 GHz and tied
+  to one node. With the reserve `b43` driver (`sudo mangos-wifi-driver b43`)
+  it reconnects. Setting the mesh to WPA2-only (AES), where the mesh app
+  allows it, is the other fix. Switching driver now unties saved networks
+  from the old interface name, so they keep working.
 - When `wl` loads, the kernel logs "Unpatched return thunk in use" with a
   warning trace: the closed-source part of the driver predates current CPU
   mitigations. It is harmless (Broadcom/Debian note to ignore it on older
