@@ -39,6 +39,14 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   real Wi-Fi traffic is **untested on hardware**. The **Wi-Fi Check** icon on
   the live desktop prints `lspci -nn` and the Wi-Fi state, and saves it to
   `~/mangos-wifi-check.txt`.
+- **Dual-band routers and mesh extenders.** On a network that is on both
+  2.4 and 5 GHz under one name (e.g. a Virgin Media hub with an extender),
+  `wl` associates on 5 GHz but often gets no address (DHCP), so the Wi-Fi
+  icon keeps spinning; on 2.4 GHz it works (seen on the real MacBook3,1).
+  After a network connects once, MangOS locks its saved profile to 2.4 GHz
+  if that network is also on 2.4 GHz (5 GHz-only networks are left alone).
+  Manually: `sudo nmcli connection modify "<name>" 802-11-wireless.band bg`;
+  undo with `802-11-wireless.band ""`.
 - When `wl` loads, the kernel logs "Unpatched return thunk in use" with a
   warning trace: the closed-source part of the driver predates current CPU
   mitigations. It is harmless (Broadcom/Debian note to ignore it on older
