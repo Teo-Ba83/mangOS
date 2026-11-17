@@ -165,6 +165,8 @@ fontconfig
 
 # ------------------------------------------------------- network / audio
 network-manager
+network-manager-l10n
+systemd-timesyncd
 network-manager-gnome
 network-manager-openvpn-gnome
 wpasupplicant
@@ -176,6 +178,13 @@ libnss-mdns
 bluez
 blueman
 pipewire
+# Session D-Bus for systemd user services: without it WirePlumber cannot start
+# and apps wait forever for PulseAudio (it is only a Recommends of libpam-systemd).
+dbus-user-session
+rtkit
+alsa-ucm-conf
+alsa-topology-conf
+libpipewire-0.3-common
 pipewire-audio
 pipewire-pulse
 pipewire-alsa
@@ -214,6 +223,8 @@ firefox-esr-l10n-it
 firefox-esr
 vlc
 vlc-l10n
+vlc-plugin-notify
+vlc-plugin-access-extra
 gnome-disk-utility
 
 # ------------------------------------------------------------- installer

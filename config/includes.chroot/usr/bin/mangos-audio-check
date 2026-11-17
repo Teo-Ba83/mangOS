@@ -1,0 +1,31 @@
+#!/bin/sh
+# MangOS Audio Check: sound card, codec, driver, PipeWire services and mixer.
+# A copy is saved to ~/mangos-audio-check.txt
+export PATH="$PATH:/usr/sbin:/sbin"
+OUT=$HOME/mangos-audio-check.txt
+sec() { printf '\n=== %s ===\n' "$1"; }
+{
+echo "MangOS Audio Check  $(date '+%Y-%m-%d %H:%M')  kernel $(uname -r)"
+echo "Computer: $(cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name 2>/dev/null | tr '\n' ' ')"
+sec "Audio devices (lspci -nnk)"
+lspci -nnk | awk '/^[0-9a-f]/{show=($0 ~ /Audio|Multimedia/)} show'
+sec "ALSA cards"
+cat /proc/asound/cards 2>/dev/null || echo "no ALSA cards"
+sec "Codecs"
+for f in /proc/asound/card*/codec#*; do [ -e "$f" ] && { echo "$f"; head -4 "$f"; }; done
+sec "Driver options"
+grep -rh "snd.hda.intel\|snd_hda_intel" /etc/modprobe.d/ 2>/dev/null || echo "(none)"
+sec "User audio services"
+for u in pipewire pipewire-pulse wireplumber; do echo "$u: $(systemctl --user is-active $u 2>&1)"; done
+echo "session bus: ${DBUS_SESSION_BUS_ADDRESS:-not set}"
+[ -S "/run/user/$(id -u)/bus" ] && echo "user bus socket: present" || echo "user bus socket: MISSING (package dbus-user-session)"
+sec "PipeWire (wpctl status)"
+timeout 5 wpctl status 2>&1 | sed -n '1,45p'
+sec "Mixer (card 0)"
+amixer -c 0 scontents 2>&1 | grep -E "Simple mixer|Playback.*\[" | head -40
+sec "Recent errors (audio services)"
+journalctl --user -b --no-pager -u wireplumber -u pipewire -u pipewire-pulse 2>/dev/null | grep -iE "error|fail|warn" | tail -15
+sec "Kernel messages (snd/hda)"
+journalctl -k -b --no-pager 2>/dev/null | grep -iE "snd|hda|codec" | tail -15
+} 2>&1 | tee "$OUT"
+echo; echo "Saved to $OUT"
