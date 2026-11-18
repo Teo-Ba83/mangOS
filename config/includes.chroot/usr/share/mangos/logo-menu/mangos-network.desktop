@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Network…
+Name[it]=Rete…
+Exec=mangos-network
+Icon=preferences-system-network
+Terminal=false

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Network
+Name[it]=Rete
+Comment=Join, disconnect and forget Wi-Fi networks; DHCP or manual IP
+Comment[it]=Connetti, disconnetti e dimentica reti Wi-Fi; DHCP o IP manuale
+Exec=mangos-network
+Icon=preferences-system-network
+Terminal=false
+Categories=Settings;HardwareSettings;X-XFCE-SettingsDialog;X-XFCE-HardwareSettings;X-MangOS-Launchpad;
+Keywords=network;wifi;wireless;ethernet;ip;dhcp;dns;rete;
+StartupNotify=true

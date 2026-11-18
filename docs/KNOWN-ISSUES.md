@@ -58,6 +58,12 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   same room): `wl` 80 Mbit/s down, 26 up; `b43` 9 down, 10 up (Tenda mesh
   node with `b43`: about 15). `wl` is much faster; `b43` is the choice only
   for networks `wl` cannot reconnect to (the mixed WPA/WPA2 mesh above).
+- **Panel Wi-Fi menu and duplicates.** Clicking a dual-band network in the
+  Wi-Fi icon's menu picks its strongest (5 GHz) access point; if the saved
+  profile is locked to 2.4 GHz, the menu does not match it, asks the
+  password again and saves a copy ("Name 1"). Use **Network** (logo menu,
+  Settings or Launchpad) instead: it connects the saved profile, removes
+  duplicates, and has Forget and Details (DHCP or manual IP).
 - When `wl` loads, the kernel logs "Unpatched return thunk in use" with a
   warning trace: the closed-source part of the driver predates current CPU
   mitigations. It is harmless (Broadcom/Debian note to ignore it on older

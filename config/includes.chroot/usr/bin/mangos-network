@@ -1,0 +1,726 @@
+#!/usr/bin/python3
+"""MangOS Network: join, leave and forget Wi-Fi networks, and set addresses.
+
+Layout inspired by the Mac's Network settings: Wi-Fi switch, the current
+network, known networks, other networks in range, and a Details sheet per
+network (auto-join, band, password, DHCP or manual IP, router, DNS).
+Everything goes through nmcli; members of the sudo/netdev groups may change
+network settings without a password (NetworkManager's polkit rule).
+
+Connecting a known network activates the saved profile itself (never a
+specific access point), which avoids the duplicate "Name 1" profiles the
+panel menu creates on dual-band networks."""
+import os, re, subprocess, threading
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk, Pango
+from mangos import tr, load_css
+
+ENV = dict(os.environ, LC_ALL="C", LANG="C")
+
+CSS_EXTRA = b"""
+.net-section { font-weight: 700; opacity: .7; margin-top: 14px; }
+.net-list { border-radius: 10px; border: 1px solid alpha(currentColor, .15); }
+.net-list row { padding: 6px 10px; }
+.net-status { opacity: .7; }
+.net-big { font-size: 15px; font-weight: 600; }
+"""
+
+
+# ---------------------------------------------------------------- nmcli ----
+
+def nm(*args, timeout=40):
+    try:
+        p = subprocess.run(["nmcli", *args], capture_output=True, text=True, env=ENV, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr.strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, "", str(e)
+
+
+def split_terse(line):
+    """Split one line of `nmcli -t` output (':' separated, '\\:' escaped)."""
+    out, cur, esc = [], "", False
+    for ch in line:
+        if esc:
+            cur += ch; esc = False
+        elif ch == "\\":
+            esc = True
+        elif ch == ":":
+            out.append(cur); cur = ""
+        else:
+            cur += ch
+    out.append(cur)
+    return out
+
+
+def wifi_device():
+    _, out, _ = nm("-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device")
+    wifi = eth = None
+    for line in out.splitlines():
+        f = split_terse(line)
+        if len(f) < 4:
+            continue
+        d = {"dev": f[0], "type": f[1], "state": f[2], "conn": f[3]}
+        if f[1] == "wifi" and not wifi:
+            wifi = d
+        elif f[1] == "ethernet" and not eth:
+            eth = d
+    return wifi, eth
+
+
+def driver_of(dev):
+    try:
+        return os.path.basename(os.readlink(f"/sys/class/net/{dev}/device/driver"))
+    except OSError:
+        return ""
+
+
+def scan(dev, rescan):
+    """Networks in range, one entry per name."""
+    _, out, _ = nm("-t", "-f", "IN-USE,SSID,CHAN,SIGNAL,SECURITY", "device", "wifi", "list",
+                   "ifname", dev, "--rescan", "yes" if rescan else "no")
+    nets = {}
+    for line in out.splitlines():
+        f = split_terse(line)
+        if len(f) < 5 or not f[1]:
+            continue
+        inuse, ssid, chan, sig, sec = f[0] == "*", f[1], f[2], f[3], f[4]
+        try:
+            chan, sig = int(chan), int(sig)
+        except ValueError:
+            continue
+        n = nets.setdefault(ssid, {"ssid": ssid, "signal": 0, "has24": False, "has5": False,
+                                   "security": "", "inuse": False})
+        n["signal"] = max(n["signal"], sig)
+        n["has24"] |= chan <= 14
+        n["has5"] |= chan > 14
+        n["inuse"] |= inuse
+        if sec and sec != "--":
+            n["security"] = sec
+    return nets
+
+
+def saved_profiles():
+    """Saved Wi-Fi and Ethernet profiles: list of dicts."""
+    _, out, _ = nm("-t", "-f", "UUID,TYPE,NAME,ACTIVE", "connection", "show")
+    res = []
+    for line in out.splitlines():
+        f = split_terse(line)
+        if len(f) < 4 or f[1] not in ("802-11-wireless", "802-3-ethernet"):
+            continue
+        p = {"uuid": f[0], "type": f[1], "name": f[2], "active": f[3] == "yes", "ssid": ""}
+        if f[1] == "802-11-wireless":
+            _, ssid, _ = nm("-g", "802-11-wireless.ssid", "connection", "show", "uuid", f[0])
+            p["ssid"] = ssid.strip()
+        res.append(p)
+    return res
+
+
+def profile_settings(uuid):
+    keys = ["connection.id", "connection.autoconnect", "connection.autoconnect-priority",
+            "802-11-wireless.band", "802-11-wireless-security.key-mgmt",
+            "ipv4.method", "ipv4.addresses", "ipv4.gateway", "ipv4.dns", "ipv4.ignore-auto-dns"]
+    _, out, _ = nm("-t", "-f", ",".join(keys), "connection", "show", "uuid", uuid)
+    s = {}
+    for line in out.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            s[k] = v
+    return s
+
+
+def device_ip(dev):
+    _, out, _ = nm("-t", "-f", "IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,GENERAL.HWADDR", "device", "show", dev)
+    info = {"addr": "", "gw": "", "dns": [], "mac": ""}
+    for line in out.splitlines():
+        k, _, v = line.partition(":")
+        v = v.replace("\\:", ":")
+        if k.startswith("IP4.ADDRESS") and not info["addr"]:
+            info["addr"] = v
+        elif k == "IP4.GATEWAY":
+            info["gw"] = v
+        elif k.startswith("IP4.DNS"):
+            info["dns"].append(v)
+        elif k == "GENERAL.HWADDR":
+            info["mac"] = v
+    return info
+
+
+def key_mgmt_for(security):
+    s = security.upper()
+    if not s:
+        return None
+    if "802.1X" in s:
+        return "enterprise"
+    if "WPA2" in s or "WPA1" in s or s.startswith("WPA "):
+        return "wpa-psk"
+    if "WPA3" in s:
+        return "sae"
+    if "WEP" in s:
+        return "wep"
+    return "wpa-psk"
+
+
+def mask_to_prefix(text):
+    text = text.strip()
+    if text.isdigit() and 0 < int(text) <= 32:
+        return int(text)
+    if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", text):
+        bits = "".join(f"{int(x):08b}" for x in text.split("."))
+        if "01" not in bits:
+            return bits.count("1")
+    return None
+
+
+def prefix_to_mask(prefix):
+    bits = ("1" * prefix).ljust(32, "0")
+    return ".".join(str(int(bits[i:i + 8], 2)) for i in range(0, 32, 8))
+
+
+IPV4 = re.compile(r"^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$")
+
+
+# ------------------------------------------------------------------- UI ----
+
+def signal_icon(sig):
+    level = "excellent" if sig >= 75 else "good" if sig >= 50 else "ok" if sig >= 25 else "weak"
+    return f"network-wireless-signal-{level}-symbolic"
+
+
+class Network(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=tr("Network", "Rete"))
+        self.set_default_size(560, 680)
+        self.set_icon_name("preferences-system-network")
+        self.busy = False
+        self.dev = None
+        self.state = {}
+
+        hb = Gtk.HeaderBar(show_close_button=True, title=tr("Network", "Rete"))
+        self.spinner = Gtk.Spinner()
+        hb.pack_end(self.spinner)
+        refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
+        refresh.set_tooltip_text(tr("Search for networks again", "Cerca di nuovo le reti"))
+        refresh.connect("clicked", lambda *_: self.refresh(rescan=True))
+        hb.pack_end(refresh)
+        self.set_titlebar(hb)
+
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.add(scroll)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=18)
+        scroll.add(self.box)
+
+        # Wi-Fi switch row
+        top = Gtk.Box(spacing=12)
+        icon = Gtk.Image.new_from_icon_name("network-wireless", Gtk.IconSize.DIALOG)
+        top.pack_start(icon, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        lab = Gtk.Label(label="Wi-Fi", xalign=0); lab.get_style_context().add_class("net-big")
+        self.status = Gtk.Label(xalign=0, wrap=True); self.status.get_style_context().add_class("net-status")
+        tb.pack_start(lab, False, False, 0); tb.pack_start(self.status, False, False, 0)
+        top.pack_start(tb, True, True, 0)
+        self.switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.switch_handler = self.switch.connect("notify::active", self.on_switch)
+        top.pack_end(self.switch, False, False, 0)
+        self.box.pack_start(top, False, False, 0)
+
+        self.message = Gtk.Label(xalign=0, wrap=True)
+        self.box.pack_start(self.message, False, False, 0)
+
+        self.sections = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.box.pack_start(self.sections, False, False, 0)
+
+        bottom = Gtk.Box(spacing=8, margin_top=16)
+        other = Gtk.Button(label=tr("Other Network…", "Altra rete…"))
+        other.connect("clicked", self.on_other)
+        adv = Gtk.Button(label=tr("Advanced…", "Avanzate…"))
+        adv.set_tooltip_text(tr("All connections and settings (NetworkManager editor)",
+                                "Tutte le connessioni e impostazioni (editor di NetworkManager)"))
+        adv.connect("clicked", lambda *_: subprocess.Popen(["nm-connection-editor"]))
+        bottom.pack_start(other, False, False, 0)
+        bottom.pack_end(adv, False, False, 0)
+        self.box.pack_end(bottom, False, False, 0)
+
+        self.refresh(rescan=True)
+        GLib.timeout_add_seconds(15, self.auto_refresh)
+
+    # ----- data refresh -------------------------------------------------
+    def auto_refresh(self):
+        if not self.busy and self.is_visible():
+            self.refresh(rescan=False, quiet=True)
+        return True
+
+    def refresh(self, rescan=False, quiet=False):
+        if not quiet:
+            self.spinner.start()
+
+        def work():
+            wifi, eth = wifi_device()
+            st = {"wifi": wifi, "eth": eth, "radio": nm("radio", "wifi")[1].strip() == "enabled",
+                  "nets": {}, "saved": saved_profiles(), "ip": {}, "eth_ip": {}}
+            if wifi:
+                st["driver"] = driver_of(wifi["dev"])
+                if st["radio"]:
+                    st["nets"] = scan(wifi["dev"], rescan)
+                if wifi["state"] == "connected":
+                    st["ip"] = device_ip(wifi["dev"])
+            if eth and eth["state"] == "connected":
+                st["eth_ip"] = device_ip(eth["dev"])
+            GLib.idle_add(self.show_state, st)
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_state(self, st):
+        self.spinner.stop()
+        self.state = st
+        wifi = st["wifi"]
+        self.dev = wifi["dev"] if wifi else None
+        self.switch.handler_block(self.switch_handler)
+        self.switch.set_active(st["radio"])
+        self.switch.set_sensitive(bool(wifi))
+        self.switch.handler_unblock(self.switch_handler)
+        for c in self.sections.get_children():
+            c.destroy()
+
+        if not wifi:
+            self.status.set_text(tr("No Wi-Fi card found. If MangOS uses the wl driver, try "
+                                    "Wi-Fi Check or restart.",
+                                    "Nessuna scheda Wi-Fi trovata. Se MangOS usa il driver wl, prova "
+                                    "Controllo Wi-Fi o riavvia."))
+        elif not st["radio"]:
+            self.status.set_text(tr("Off", "Spento"))
+        elif wifi["state"] == "connected":
+            ip = st["ip"].get("addr", "").split("/")[0]
+            self.status.set_text(tr("Connected to ", "Connesso a ") + wifi["conn"] +
+                                 (f" · IP {ip}" if ip else ""))
+        elif wifi["state"].startswith("connecting"):
+            self.status.set_text(tr("Connecting to ", "Connessione a ") + wifi["conn"] + "…")
+        else:
+            self.status.set_text(tr("Not connected", "Non connesso"))
+
+        nets = st["nets"]
+        saved_wifi = [p for p in st["saved"] if p["type"] == "802-11-wireless"]
+        by_ssid = {}
+        for p in saved_wifi:
+            by_ssid.setdefault(p["ssid"], []).append(p)
+        current = wifi["conn"] if wifi and wifi["state"] == "connected" else None
+        current_ssid = next((p["ssid"] for p in saved_wifi if p["active"]), None)
+
+        if wifi and st["radio"] and current_ssid:
+            self.section(tr("Current network", "Rete attuale"), [
+                self.net_row(current_ssid, nets.get(current_ssid), by_ssid.get(current_ssid, []), current=True)])
+
+        known = sorted((s for s in by_ssid if s != current_ssid),
+                       key=lambda s: (s not in nets, -nets.get(s, {}).get("signal", 0), s.lower()))
+        if known:
+            self.section(tr("Known networks", "Reti conosciute"),
+                         [self.net_row(s, nets.get(s), by_ssid[s]) for s in known])
+
+        others = sorted((n for s, n in nets.items() if s not in by_ssid), key=lambda n: -n["signal"])
+        if wifi and st["radio"]:
+            rows = [self.net_row(n["ssid"], n, []) for n in others]
+            if not rows:
+                rows = [self.text_row(tr("No other networks found", "Nessun'altra rete trovata"))]
+            self.section(tr("Other networks", "Altre reti"), rows)
+
+        eth = st["eth"]
+        if eth:
+            eprof = [p for p in st["saved"] if p["type"] == "802-3-ethernet"]
+            if eth["state"] == "connected":
+                ip = st["eth_ip"].get("addr", "").split("/")[0]
+                txt = tr("Connected", "Connesso") + (f" · IP {ip}" if ip else "")
+            else:
+                txt = tr("Cable unplugged or not connected", "Cavo scollegato o non connesso")
+            self.section("Ethernet", [self.eth_row(txt, eprof)])
+        self.sections.show_all()
+        return False
+
+    def section(self, title, rows):
+        lab = Gtk.Label(label=title, xalign=0)
+        lab.get_style_context().add_class("net-section")
+        self.sections.pack_start(lab, False, False, 0)
+        lb = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        lb.get_style_context().add_class("net-list")
+        for r in rows:
+            lb.add(r)
+        self.sections.pack_start(lb, False, False, 0)
+
+    def text_row(self, text):
+        row = Gtk.ListBoxRow(activatable=False)
+        lab = Gtk.Label(label=text, xalign=0, margin=6)
+        lab.get_style_context().add_class("net-status")
+        row.add(lab)
+        return row
+
+    def net_row(self, ssid, net, profiles, current=False):
+        row = Gtk.ListBoxRow(activatable=False)
+        box = Gtk.Box(spacing=10)
+        if net:
+            box.pack_start(Gtk.Image.new_from_icon_name(signal_icon(net["signal"]), Gtk.IconSize.LARGE_TOOLBAR),
+                           False, False, 0)
+        else:
+            box.pack_start(Gtk.Image.new_from_icon_name("network-wireless-offline-symbolic",
+                                                        Gtk.IconSize.LARGE_TOOLBAR), False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        name = Gtk.Label(label=ssid, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        tb.pack_start(name, False, False, 0)
+        sub = []
+        if current:
+            sub.append(tr("Connected", "Connesso"))
+        elif profiles and not net:
+            sub.append(tr("Not in range", "Non nelle vicinanze"))
+        if net and net["has24"] and net["has5"]:
+            sub.append("2.4 + 5 GHz")
+        elif net:
+            sub.append("5 GHz" if net["has5"] else "2.4 GHz")
+        if len(profiles) > 1:
+            sub.append(tr(f"{len(profiles)} saved copies", f"{len(profiles)} copie salvate"))
+        if sub:
+            s = Gtk.Label(label=" · ".join(sub), xalign=0)
+            s.get_style_context().add_class("net-status")
+            tb.pack_start(s, False, False, 0)
+        box.pack_start(tb, True, True, 0)
+        if net and net["security"]:
+            lock = Gtk.Image.new_from_icon_name("network-wireless-encrypted-symbolic", Gtk.IconSize.MENU)
+            lock.set_tooltip_text(net["security"])
+            box.pack_start(lock, False, False, 0)
+        if current:
+            b = Gtk.Button(label=tr("Disconnect", "Disconnetti"))
+            b.connect("clicked", lambda *_: self.disconnect())
+            box.pack_start(b, False, False, 0)
+        elif net:
+            b = Gtk.Button(label=tr("Connect", "Connetti"))
+            b.get_style_context().add_class("suggested-action")
+            b.connect("clicked", lambda *_: self.connect_net(ssid, net, profiles))
+            box.pack_start(b, False, False, 0)
+        if profiles:
+            d = Gtk.Button.new_from_icon_name("view-more-horizontal-symbolic", Gtk.IconSize.BUTTON)
+            d.set_tooltip_text(tr("Details", "Dettagli"))
+            d.connect("clicked", lambda *_: self.details(ssid, net, profiles, current))
+            box.pack_start(d, False, False, 0)
+        row.add(box)
+        return row
+
+    def eth_row(self, text, profiles):
+        row = Gtk.ListBoxRow(activatable=False)
+        box = Gtk.Box(spacing=10)
+        box.pack_start(Gtk.Image.new_from_icon_name("network-wired-symbolic", Gtk.IconSize.LARGE_TOOLBAR),
+                       False, False, 0)
+        box.pack_start(Gtk.Label(label=text, xalign=0), True, True, 0)
+        if profiles:
+            d = Gtk.Button.new_from_icon_name("view-more-horizontal-symbolic", Gtk.IconSize.BUTTON)
+            d.set_tooltip_text(tr("Details", "Dettagli"))
+            d.connect("clicked", lambda *_: self.details(None, None, profiles, profiles[0]["active"]))
+            box.pack_start(d, False, False, 0)
+        row.add(box)
+        return row
+
+    # ----- actions ------------------------------------------------------
+    def run_action(self, label, fn, after=None):
+        self.busy = True
+        self.spinner.start()
+        self.message.set_text(label)
+
+        def work():
+            ok, err = fn()
+            GLib.idle_add(done, ok, err)
+
+        def done(ok, err):
+            self.busy = False
+            self.message.set_text("" if ok else err)
+            if after:
+                after(ok)
+            self.refresh(rescan=False)
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_switch(self, sw, _):
+        on = sw.get_active()
+        self.run_action(tr("Turning Wi-Fi on…", "Accensione del Wi-Fi…") if on else
+                        tr("Turning Wi-Fi off…", "Spegnimento del Wi-Fi…"),
+                        lambda: self.result(nm("radio", "wifi", "on" if on else "off")))
+
+    @staticmethod
+    def result(r, fail=None):
+        rc, out, err = r
+        if rc == 0:
+            return True, ""
+        return False, fail or (err or out).replace("Error: ", "")
+
+    def disconnect(self):
+        if self.dev:
+            self.run_action(tr("Disconnecting…", "Disconnessione…"),
+                            lambda: self.result(nm("device", "disconnect", self.dev)))
+
+    def connect_net(self, ssid, net, profiles):
+        if profiles:
+            keep, extra = self.pick_profile(profiles)
+            def go():
+                for p in extra:                      # duplicates made by the panel menu
+                    nm("connection", "delete", "uuid", p["uuid"])
+                return self.result(nm("connection", "up", "uuid", keep["uuid"], timeout=90),
+                                   tr("Could not connect to ", "Impossibile connettersi a ") + ssid)
+            self.run_action(tr("Connecting to ", "Connessione a ") + ssid + "…", go)
+            return
+        km = key_mgmt_for(net["security"])
+        if km == "enterprise":
+            self.message.set_text(tr("This network needs a user name (802.1X): use Advanced…",
+                                     "Questa rete richiede un nome utente (802.1X): usa Avanzate…"))
+            return
+        pw = None
+        if km:
+            pw = self.ask_password(ssid)
+            if pw is None:
+                return
+        self.create_and_connect(ssid, km, pw, net)
+
+    @staticmethod
+    def pick_profile(profiles):
+        def score(p):
+            s = profile_settings(p["uuid"])
+            return (p["active"], bool(s.get("802-11-wireless.band")), p["name"] == p["ssid"])
+        ordered = sorted(profiles, key=score, reverse=True)
+        return ordered[0], ordered[1:]
+
+    def create_and_connect(self, ssid, km, pw, net, hidden=False):
+        args = ["connection", "add", "type", "wifi", "con-name", ssid, "ssid", ssid]
+        if hidden:
+            args += ["802-11-wireless.hidden", "yes"]
+        if km == "wep":
+            args += ["wifi-sec.key-mgmt", "none", "wifi-sec.wep-key0", pw]
+        elif km:
+            args += ["wifi-sec.key-mgmt", km, "wifi-sec.psk", pw]
+        # The Broadcom wl driver gets no address on the 5 GHz side of
+        # dual-band networks (see docs/KNOWN-ISSUES.md): stay on 2.4 GHz.
+        if net and net["has24"] and net["has5"] and self.state.get("driver") == "wl":
+            args += ["802-11-wireless.band", "bg"]
+
+        def go():
+            rc, out, err = nm(*args)
+            if rc != 0:
+                return False, err.replace("Error: ", "")
+            m = re.search(r"\(([0-9a-f-]{36})\)", out)
+            uuid = m.group(1) if m else None
+            r = nm("connection", "up", "uuid", uuid, timeout=90) if uuid else (1, "", "")
+            if r[0] != 0 and uuid:
+                nm("connection", "delete", "uuid", uuid)       # do not keep a broken copy
+                if "secrets" in (r[1] + r[2]).lower() or "802-1x" in (r[1] + r[2]).lower():
+                    return False, tr("Wrong password for ", "Password errata per ") + ssid
+                return False, tr("Could not connect to ", "Impossibile connettersi a ") + ssid
+            return True, ""
+        self.run_action(tr("Connecting to ", "Connessione a ") + ssid + "…", go)
+
+    def ask_password(self, ssid):
+        d = Gtk.Dialog(title=tr("Password", "Password"), transient_for=self, modal=True)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL,
+                      tr("Join", "Connetti"), Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        box = d.get_content_area(); box.set_spacing(8); box.set_margin_start(16); box.set_margin_end(16)
+        box.set_margin_top(12)
+        box.pack_start(Gtk.Label(label=tr(f"Enter the password for “{ssid}”.",
+                                          f"Inserisci la password di “{ssid}”."), xalign=0), False, False, 0)
+        e = Gtk.Entry(visibility=False, activates_default=True)
+        box.pack_start(e, False, False, 0)
+        show = Gtk.CheckButton(label=tr("Show password", "Mostra password"))
+        show.connect("toggled", lambda b: e.set_visibility(b.get_active()))
+        box.pack_start(show, False, False, 0)
+        d.show_all()
+        while True:
+            r = d.run()
+            if r != Gtk.ResponseType.OK:
+                d.destroy(); return None
+            pw = e.get_text()
+            if len(pw) >= 8 or len(pw) in (5, 13):
+                d.destroy(); return pw
+            e.grab_focus()
+
+    def on_other(self, *_):
+        d = Gtk.Dialog(title=tr("Other Network", "Altra rete"), transient_for=self, modal=True)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL,
+                      tr("Join", "Connetti"), Gtk.ResponseType.OK)
+        g = Gtk.Grid(row_spacing=8, column_spacing=10, margin=16)
+        d.get_content_area().add(g)
+        name = Gtk.Entry(activates_default=True)
+        sec = Gtk.ComboBoxText()
+        for k, t in (("wpa-psk", "WPA/WPA2 Personal"), ("sae", "WPA3 Personal"), ("", tr("None", "Nessuna"))):
+            sec.append(k, t)
+        sec.set_active_id("wpa-psk")
+        pw = Gtk.Entry(visibility=False, activates_default=True)
+        sec.connect("changed", lambda c: pw.set_sensitive(bool(c.get_active_id())))
+        for i, (lab, w) in enumerate(((tr("Network name", "Nome della rete"), name),
+                                      (tr("Security", "Sicurezza"), sec), ("Password", pw))):
+            g.attach(Gtk.Label(label=lab, xalign=1), 0, i, 1, 1)
+            g.attach(w, 1, i, 1, 1)
+        d.set_default_response(Gtk.ResponseType.OK)
+        d.show_all()
+        if d.run() == Gtk.ResponseType.OK and name.get_text().strip():
+            km = sec.get_active_id() or None
+            self.create_and_connect(name.get_text().strip(), km, pw.get_text() if km else None,
+                                    self.state.get("nets", {}).get(name.get_text().strip()), hidden=True)
+        d.destroy()
+
+    # ----- details sheet ------------------------------------------------
+    def details(self, ssid, net, profiles, current):
+        keep, extra = self.pick_profile(profiles)
+        s = profile_settings(keep["uuid"])
+        wifi = ssid is not None
+        title = ssid if wifi else "Ethernet"
+        d = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        d.set_default_size(440, -1)
+        forget = d.add_button(tr("Forget This Network", "Dimentica questa rete") if wifi else
+                              tr("Reset", "Ripristina"), 1)
+        forget.get_style_context().add_class("destructive-action")
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, tr("OK", "OK"), Gtk.ResponseType.OK)
+        g = Gtk.Grid(row_spacing=8, column_spacing=12, margin=16)
+        d.get_content_area().add(g)
+        row = 0
+
+        def add(label, widget):
+            nonlocal row
+            g.attach(Gtk.Label(label=label, xalign=1), 0, row, 1, 1)
+            widget.set_hexpand(True)
+            g.attach(widget, 1, row, 1, 1)
+            row += 1
+
+        def heading(text):
+            nonlocal row
+            l = Gtk.Label(label=text, xalign=0); l.get_style_context().add_class("net-section")
+            g.attach(l, 0, row, 2, 1); row += 1
+
+        if current:
+            dev = self.dev if wifi else (self.state.get("eth") or {}).get("dev")
+            info = self.state.get("ip") if wifi else self.state.get("eth_ip")
+            info = info or (device_ip(dev) if dev else {})
+            for lab, val in ((tr("IP address", "Indirizzo IP"), info.get("addr", "")),
+                             (tr("Router", "Router"), info.get("gw", "")),
+                             ("DNS", ", ".join(info.get("dns", []))),
+                             (tr("Hardware address", "Indirizzo hardware"), info.get("mac", ""))):
+                if val:
+                    v = Gtk.Label(label=val, xalign=0, selectable=True)
+                    add(lab, v)
+
+        auto = Gtk.Switch(halign=Gtk.Align.START, active=s.get("connection.autoconnect") == "yes")
+        add(tr("Auto-join", "Connessione automatica"), auto)
+        pref = Gtk.Switch(halign=Gtk.Align.START,
+                          active=int(s.get("connection.autoconnect-priority") or 0) > 0)
+        add(tr("Preferred network", "Rete preferita"), pref)
+
+        band = pwd = None
+        if wifi:
+            band = Gtk.ComboBoxText()
+            for k, t in (("", tr("Automatic", "Automatica")), ("bg", "2.4 GHz"), ("a", "5 GHz")):
+                band.append(k, t)
+            band.set_active_id(s.get("802-11-wireless.band", "") or "")
+            add(tr("Band", "Banda"), band)
+            if s.get("802-11-wireless-security.key-mgmt"):
+                pwd = Gtk.Entry(visibility=False, placeholder_text=tr("unchanged", "invariata"))
+                add(tr("New password", "Nuova password"), pwd)
+
+        heading("TCP/IP (IPv4)")
+        method = Gtk.ComboBoxText()
+        method.append("auto", tr("Automatic (DHCP)", "Automatico (DHCP)"))
+        method.append("manual", tr("Manual", "Manuale"))
+        method.set_active_id("manual" if s.get("ipv4.method") == "manual" else "auto")
+        add(tr("Configure IPv4", "Configura IPv4"), method)
+        addr0 = (s.get("ipv4.addresses") or "").split(",")[0].strip()
+        ip0, _, pfx0 = addr0.partition("/")
+        ip = Gtk.Entry(text=ip0, placeholder_text="192.168.0.50")
+        mask = Gtk.Entry(text=prefix_to_mask(int(pfx0)) if pfx0.isdigit() else "",
+                         placeholder_text="255.255.255.0")
+        gw = Gtk.Entry(text=s.get("ipv4.gateway", "").replace("--", ""), placeholder_text="192.168.0.1")
+        add(tr("IP address", "Indirizzo IP"), ip)
+        add(tr("Subnet mask", "Maschera di sottorete"), mask)
+        add(tr("Router", "Router"), gw)
+        dns = Gtk.Entry(text=s.get("ipv4.dns", "").replace("--", ""),
+                        placeholder_text=tr("automatic, or e.g. 1.1.1.1, 8.8.8.8",
+                                            "automatici, oppure es. 1.1.1.1, 8.8.8.8"))
+        add("DNS", dns)
+
+        def sync(*_):
+            m = method.get_active_id() == "manual"
+            for w in (ip, mask, gw):
+                w.set_sensitive(m)
+        method.connect("changed", sync); sync()
+        err = Gtk.Label(xalign=0, wrap=True)
+        g.attach(err, 0, row, 2, 1)
+        d.set_default_response(Gtk.ResponseType.OK)
+        d.show_all()
+
+        while True:
+            r = d.run()
+            if r == 1:
+                if self.confirm(tr(f"Forget “{title}”? You will need the password to join it again.",
+                                   f"Dimenticare “{title}”? Per ricollegarti servirà di nuovo la password.")
+                                if wifi else tr("Reset Ethernet to automatic (DHCP)?",
+                                                "Riportare Ethernet su automatico (DHCP)?")):
+                    d.destroy()
+                    if wifi:
+                        uuids = [p["uuid"] for p in profiles]
+                        self.run_action(tr("Forgetting ", "Rimozione di ") + title + "…",
+                                        lambda: self.result(nm("connection", "delete", *sum((["uuid", u] for u in uuids), []))))
+                    else:
+                        self.run_action(tr("Resetting…", "Ripristino…"), lambda: self.result(nm(
+                            "connection", "modify", "uuid", keep["uuid"], "ipv4.method", "auto",
+                            "ipv4.addresses", "", "ipv4.gateway", "", "ipv4.dns", "", "ipv4.ignore-auto-dns", "no")))
+                    return
+                continue
+            if r != Gtk.ResponseType.OK:
+                d.destroy(); return
+            args = ["connection.autoconnect", "yes" if auto.get_active() else "no",
+                    "connection.autoconnect-priority", "10" if pref.get_active() else "0"]
+            if band:
+                args += ["802-11-wireless.band", band.get_active_id() or ""]
+            if pwd and pwd.get_text():
+                if len(pwd.get_text()) < 8:
+                    err.set_text(tr("The password needs at least 8 characters.",
+                                    "La password deve avere almeno 8 caratteri.")); continue
+                args += ["802-11-wireless-security.psk", pwd.get_text()]
+            dns_list = [x for x in re.split(r"[,\s]+", dns.get_text().strip()) if x]
+            if any(not IPV4.match(x) for x in dns_list):
+                err.set_text(tr("A DNS server address is not valid.", "Un indirizzo DNS non è valido.")); continue
+            if method.get_active_id() == "manual":
+                pfx = mask_to_prefix(mask.get_text())
+                if not IPV4.match(ip.get_text().strip()) or pfx is None or \
+                        (gw.get_text().strip() and not IPV4.match(gw.get_text().strip())):
+                    err.set_text(tr("Check IP address, subnet mask and router.",
+                                    "Controlla indirizzo IP, maschera e router.")); continue
+                args += ["ipv4.method", "manual", "ipv4.addresses", f"{ip.get_text().strip()}/{pfx}",
+                         "ipv4.gateway", gw.get_text().strip()]
+            else:
+                args += ["ipv4.method", "auto", "ipv4.addresses", "", "ipv4.gateway", ""]
+            args += ["ipv4.dns", " ".join(dns_list), "ipv4.ignore-auto-dns", "yes" if dns_list else "no"]
+            d.destroy()
+            uuid, extras = keep["uuid"], [p["uuid"] for p in extra]
+
+            def go():
+                rc = nm("connection", "modify", "uuid", uuid, *args)
+                if rc[0] != 0:
+                    return self.result(rc)
+                for u in extras:                       # one profile per network
+                    nm("connection", "delete", "uuid", u)
+                if current:                            # apply now
+                    return self.result(nm("connection", "up", "uuid", uuid, timeout=90))
+                return True, ""
+            self.run_action(tr("Saving…", "Salvataggio…"), go)
+            return
+
+    def confirm(self, text):
+        m = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.OK_CANCEL, text=text)
+        r = m.run(); m.destroy()
+        return r == Gtk.ResponseType.OK
+
+
+def main():
+    load_css()
+    from gi.repository import Gdk
+    p = Gtk.CssProvider(); p.load_from_data(CSS_EXTRA)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = Network()
+    w.connect("destroy", Gtk.main_quit)
+    w.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()
