@@ -33,6 +33,7 @@ Legend: ✅ passed in VM · ⚠️ passed with a known limit · ❌ not working 
 | 3.1 | XFCE + Plank + WhiteSur | ✅ | [desktop](screenshots/05-live-desktop-v1.png) |
 | 3.2 | Top bar, logo menu, global menu | ✅ | [logo menu](screenshots/07-logo-menu.png) · [global menu](screenshots/25-global-menu.png) |
 | 3.3 | Launchpad (dock icon, Cmd+Space/F4) | ✅ | [light](screenshots/06-launchpad-v1.png) · [dark, apps only](screenshots/24-launchpad-dark.png) |
+| 3.3 | Two-finger scroll speed on the real trackpad | ✅ on hardware | default libinput speed scrolled ~5 lines for a tiny movement; `ScrollPixelDistance 50` tested good on the MacBook3,1, now the default |
 | 3.3 | Mac shortcuts (keyd) and trackpad | ⏳ | keyd service starts at boot; key behaviour and trackpad need the real keyboard/trackpad |
 | 3.4 | Defaults for every new user | ✅ | the user created by the installer got the full look and the welcome window |
 | Wi-Fi | `wl` (broadcom-sta-dkms) built for the ISO kernel during the build, offline | ✅ | build fails if `wl.ko` is missing; in the VM `modprobe wl` loads it ([log](screenshots/36-wl-loaded-warning.png): "Unpatched return thunk" warning is harmless) |
