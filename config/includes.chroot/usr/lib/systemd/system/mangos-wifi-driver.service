@@ -1,7 +1,5 @@
 [Unit]
-Description=MangOS: Wi-Fi driver chosen on the kernel command line (mangos.wifi=)
-ConditionKernelCommandLine=|mangos.wifi=b43
-ConditionKernelCommandLine=|mangos.wifi=wl
+Description=MangOS: Broadcom Wi-Fi driver (mangos.wifi= boot option, reload if the card has no driver)
 After=systemd-modules-load.service systemd-udev-trigger.service
 Before=NetworkManager.service network-pre.target
 Wants=network-pre.target

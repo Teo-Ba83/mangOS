@@ -35,6 +35,13 @@ blacklist bcma
 blacklist brcmsmac
 blacklist brcm80211
 blacklist b44
+# A blacklist does not stop a module pulled in another way; on the MacBook
+# ssb was still loaded at boot and wl did not get the card. Hard block.
+install ssb /bin/false
+install bcma /bin/false
+install b43 /bin/false
+install b43legacy /bin/false
+install brcmsmac /bin/false
 C
   fi
 }
@@ -43,9 +50,10 @@ swap_modules() { # mode
   if [ "$1" = b43 ]; then
     modprobe -r $WL_STACK 2>/dev/null || true
     # A blacklist only stops automatic loading; explicit modprobe still works.
-    modprobe ssb 2>/dev/null || true
-    modprobe bcma 2>/dev/null || true
-    modprobe b43
+    # --ignore-install: the wl configuration hard-blocks these modules.
+    modprobe --ignore-install ssb 2>/dev/null || true
+    modprobe --ignore-install bcma 2>/dev/null || true
+    modprobe --ignore-install b43
   else
     modprobe -r b43 b43legacy brcmsmac 2>/dev/null || true
     modprobe -r bcma ssb 2>/dev/null || true
@@ -63,6 +71,15 @@ unpin_profiles() {
   return 0
 }
 
+unbound_broadcom() { # a Broadcom Wi-Fi card (PCI class 0280) with no driver
+  for d in /sys/bus/pci/devices/*; do
+    [ "$(cat "$d/vendor" 2>/dev/null)" = 0x14e4 ] || continue
+    case "$(cat "$d/class" 2>/dev/null)" in 0x0280*) ;; *) continue;; esac
+    [ -e "$d/driver" ] || return 0
+  done
+  return 1
+}
+
 need_root() { [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }; }
 check_mode() { case "$1" in wl|b43) ;; *) echo "mode must be wl or b43" >&2; exit 2;; esac; }
 
@@ -76,8 +93,18 @@ case "${1:-status}" in
   --boot)
     # Called by mangos-wifi-driver.service: honour mangos.wifi= on the kernel command line.
     mode=$(sed -n 's/.*mangos\.wifi=\([a-z0-9]*\).*/\1/p' /proc/cmdline)
-    [ -n "$mode" ] || exit 0
-    check_mode "$mode"; swap_modules "$mode"; echo "Wi-Fi driver for this boot (mangos.wifi): $mode" ;;
+    if [ -n "$mode" ]; then
+      check_mode "$mode"; swap_modules "$mode"; echo "Wi-Fi driver for this boot (mangos.wifi): $mode"; exit 0
+    fi
+    # Self-heal: the configured driver is loaded but did not take the card
+    # (seen with wl after switching back from b43). Reload it cleanly.
+    udevadm settle -t 15 2>/dev/null || true
+    if unbound_broadcom; then
+      mode=$(cat "$STATE" 2>/dev/null || echo wl); check_mode "$mode"
+      echo "Wi-Fi card has no driver; reloading $mode"
+      if [ "$mode" = wl ]; then modprobe -r wl ssb bcma b43 b43legacy 2>/dev/null || true; fi
+      swap_modules "$mode" || true
+    fi ;;
   wl|b43)
     need_root; write_config "$1"; echo "$1" > "$STATE"; swap_modules "$1"; unpin_profiles
     if ! grep -qw boot=live /proc/cmdline; then update-initramfs -u >/dev/null 2>&1 || true; fi
