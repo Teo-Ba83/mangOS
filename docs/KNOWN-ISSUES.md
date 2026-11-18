@@ -54,6 +54,10 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   it reconnects. Setting the mesh to WPA2-only (AES), where the mesh app
   allows it, is the other fix. Switching driver now unties saved networks
   from the old interface name, so they keep working.
+- **Speed, measured on the MacBook3,1** (Speedtest, Virgin hub on 2.4 GHz,
+  same room): `wl` 80 Mbit/s down, 26 up; `b43` 9 down, 10 up (Tenda mesh
+  node with `b43`: about 15). `wl` is much faster; `b43` is the choice only
+  for networks `wl` cannot reconnect to (the mixed WPA/WPA2 mesh above).
 - When `wl` loads, the kernel logs "Unpatched return thunk in use" with a
   warning trace: the closed-source part of the driver predates current CPU
   mitigations. It is harmless (Broadcom/Debian note to ignore it on older
