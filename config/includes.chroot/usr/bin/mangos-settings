@@ -1,0 +1,405 @@
+#!/usr/bin/python3
+"""MangOS System Settings.
+
+Layout inspired by the Mac's System Settings: a sidebar with a search field,
+the user card and coloured rounded icons grouped by topic; the chosen pane
+on the right. Xfce settings dialogs are embedded with XEmbed (their
+--socket-id option, the same mechanism as xfce4-settings-manager); MangOS
+panels and other tools that cannot be embedded open in their own window.
+
+usage: mangos-settings [pane-id]"""
+import os, pwd, shutil, signal, subprocess, sys
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango
+from mangos import tr, load_css, os_release
+
+# (id, English, Italian, tile colour, icon, command, embeddable, keywords)
+GROUPS = [
+    [
+        ("network", "Wi-Fi & Network", "Wi-Fi e rete", "#0A84FF", "network-wireless-symbolic",
+         ["mangos-network"], True, "wifi wireless ethernet ip dhcp dns internet rete"),
+        ("bluetooth", "Bluetooth", "Bluetooth", "#0A84FF", "bluetooth-symbolic",
+         ["blueman-manager"], False, "bluetooth devices dispositivi"),
+        ("sound", "Sound", "Suono", "#FF375F", "audio-volume-high-symbolic",
+         ["pavucontrol"], False, "sound audio volume speakers microphone suono altoparlanti microfono"),
+    ],
+    [
+        ("notifications", "Notifications", "Notifiche", "#FF453A", "preferences-system-notifications-symbolic",
+         ["xfce4-notifyd-config"], True, "notifications do not disturb notifiche"),
+        ("battery", "Battery & Energy", "Batteria ed energia", "#30D158", "battery-full-symbolic",
+         ["xfce4-power-manager-settings"], True, "battery power energy sleep lid batteria energia stop"),
+    ],
+    [
+        ("update", "Software Update", "Aggiornamento software", "#8E8E93", "software-update-available-symbolic",
+         ["mangos-update"], False, "update upgrade aggiornamento"),
+        ("language", "Language & Region", "Lingua e area geografica", "#0A84FF", "preferences-desktop-locale-symbolic",
+         ["mangos-language"], False, "language region locale italiano english lingua"),
+        ("apps", "Default Apps", "App predefinite", "#8E8E93", "applications-system-symbolic",
+         ["xfce4-mime-settings"], True, "default applications browser mail file types predefinite"),
+        ("startup", "Login & Startup", "Avvio e sessione", "#8E8E93", "system-run-symbolic",
+         ["xfce4-session-settings"], True, "login startup autostart session avvio sessione"),
+        ("accessibility", "Accessibility", "Accessibilità", "#0A84FF", "preferences-desktop-accessibility-symbolic",
+         ["xfce4-accessibility-settings"], True, "accessibility zoom keys accessibilità"),
+    ],
+    [
+        ("appearance", "Appearance", "Aspetto", "#1C1C1E", "preferences-desktop-appearance-symbolic",
+         ["mangos-welcome", "--appearance"], False, "light dark theme chiaro scuro tema"),
+        ("themes", "Themes & Fonts", "Temi e caratteri", "#5E5CE6", "preferences-desktop-theme-symbolic",
+         ["xfce4-appearance-settings"], True, "theme icons fonts style temi icone caratteri"),
+        ("wallpaper", "Wallpaper & Desktop", "Sfondo e scrivania", "#64D2FF", "preferences-desktop-wallpaper-symbolic",
+         ["xfdesktop-settings"], True, "wallpaper background desktop icons sfondo scrivania"),
+        ("dock", "Dock", "Dock", "#1C1C1E", "dock-symbolic",
+         ["plank", "--preferences"], False, "dock plank hide magnification nascondi ingrandimento"),
+        ("menubar", "Top Bar", "Barra in alto", "#1C1C1E", "go-top-symbolic",
+         ["xfce4-panel", "--preferences"], False, "panel top bar menu bar pannello barra"),
+        ("windows", "Windows", "Finestre", "#8E8E93", "window-new-symbolic",
+         ["xfwm4-settings"], True, "windows title buttons shortcuts finestre"),
+        ("displays", "Displays", "Monitor", "#0A84FF", "video-display-symbolic",
+         ["xfce4-display-settings"], True, "display resolution screen monitor risoluzione schermo"),
+    ],
+    [
+        ("keyboard", "Keyboard", "Tastiera", "#8E8E93", "input-keyboard-symbolic",
+         ["xfce4-keyboard-settings"], True, "keyboard shortcuts layout tastiera scorciatoie"),
+        ("mouse", "Mouse & Trackpad", "Mouse e trackpad", "#8E8E93", "input-touchpad-symbolic",
+         ["xfce4-mouse-settings"], True, "mouse trackpad touchpad pointer speed puntatore velocità"),
+        ("printers", "Printers", "Stampanti", "#8E8E93", "printer-symbolic",
+         ["system-config-printer"], False, "printer print stampante"),
+        ("drives", "Removable Drives", "Unità rimovibili", "#8E8E93", "media-removable-symbolic",
+         ["thunar-volman-settings"], True, "usb drives media removable unità chiavetta"),
+    ],
+    [
+        ("tweaks", "Window Tweaks", "Finestre: avanzate", "#636366", "emblem-system-symbolic",
+         ["xfwm4-tweaks-settings"], True, "compositor tweaks shadows ombre avanzate"),
+        ("workspaces", "Workspaces", "Spazi di lavoro", "#636366", "view-grid-symbolic",
+         ["xfwm4-workspace-settings"], True, "workspaces desktops spaces spazi"),
+        ("color", "Color Profiles", "Profili colore", "#636366", "preferences-color-symbolic",
+         ["xfce4-color-settings"], True, "color profile icc colore"),
+        ("editor", "Settings Editor", "Editor impostazioni", "#636366", "preferences-system-symbolic",
+         ["xfce4-settings-editor"], True, "xfconf editor advanced avanzate"),
+    ],
+]
+
+CSS = b"""
+.settings-sidebar { background: alpha(currentColor, .04); border-right: 1px solid alpha(currentColor, .1); }
+.settings-sidebar list { background: transparent; }
+.settings-sidebar row { border-radius: 7px; margin: 0 8px; padding: 4px 6px; }
+.settings-sidebar row:selected { background: #0A84FF; color: white; }
+.settings-group-sep { min-height: 1px; margin: 6px 14px; background: alpha(currentColor, .1); }
+.tile { border-radius: 7px; min-width: 26px; min-height: 26px; }
+.tile image { color: white; }
+.user-card { padding: 10px 8px; border-radius: 9px; }
+.user-name { font-weight: 700; font-size: 14px; }
+.user-sub { font-size: 11px; opacity: .65; }
+.pane-title { font-size: 20px; font-weight: 700; }
+.pane-note { opacity: .7; }
+.big-tile { border-radius: 18px; min-width: 72px; min-height: 72px; }
+.big-tile image { color: white; }
+"""
+
+
+def tile(color, icon, size=26, px=16, big=False):
+    box = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+    box.set_size_request(size, size)
+    ctx = box.get_style_context()
+    ctx.add_class("big-tile" if big else "tile")
+    prov = Gtk.CssProvider()
+    prov.load_from_data(f"box {{ background: {color}; }}".encode())
+    ctx.add_provider(prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    img = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
+    img.set_pixel_size(px)
+    img.set_halign(Gtk.Align.CENTER); img.set_valign(Gtk.Align.CENTER)
+    box.pack_start(img, True, True, 0)
+    box.set_hexpand(False); box.set_vexpand(False)   # do not stretch the row
+    return box
+
+
+def available(item):
+    return shutil.which(item[5][0]) is not None
+
+
+class Settings(Gtk.Window):
+    def __init__(self, start=None):
+        super().__init__(title=tr("System Settings", "Impostazioni di sistema"))
+        self.set_icon_name("preferences-system")
+        self.set_default_size(1000, 660)
+        self.child = None
+        self.items = {}
+
+        hb = Gtk.HeaderBar(show_close_button=True)
+        hb.set_title(tr("System Settings", "Impostazioni di sistema"))
+        self.set_titlebar(hb)
+
+        root = Gtk.Box()
+        self.add(root)
+
+        # ---- sidebar
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        side.set_size_request(250, -1)
+        side.get_style_context().add_class("settings-sidebar")
+        root.pack_start(side, False, False, 0)
+        self.search = Gtk.SearchEntry(placeholder_text=tr("Search", "Cerca"), margin=10, margin_bottom=2)
+        self.search.connect("search-changed", lambda *_: self.listbox.invalidate_filter())
+        side.pack_start(self.search, False, False, 0)
+        sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        side.pack_start(sw, True, True, 0)
+        self.listbox = Gtk.ListBox()
+        self.listbox.set_filter_func(self.filter_row)
+        self.listbox.set_header_func(self.header_row)
+        self.listbox.connect("row-selected", self.on_select)
+        self.listbox.connect("row-activated", self.on_activate)
+        sw.add(self.listbox)
+
+        # user card (opens About)
+        self.listbox.add(self.user_row())
+        for gi_, group in enumerate(GROUPS):
+            for item in group:
+                if available(item):
+                    self.items[item[0]] = item
+                    self.listbox.add(self.item_row(item, gi_))
+
+        # ---- content
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, hexpand=True)
+        root.pack_start(self.stack, True, True, 0)
+
+        self.show_all()
+        first = self.find_row(start) if start else None
+        self.listbox.select_row(first or self.listbox.get_row_at_index(1))
+        self.connect("key-press-event", self.on_key)
+
+    # ---- sidebar rows
+    def user_row(self):
+        row = Gtk.ListBoxRow()
+        row.item = None
+        row.group = -1
+        box = Gtk.Box(spacing=10)
+        box.get_style_context().add_class("user-card")
+        av = Gtk.Image.new_from_icon_name("avatar-default", Gtk.IconSize.DIALOG)
+        av.set_pixel_size(40)
+        box.pack_start(av, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        try:
+            pw = pwd.getpwuid(os.getuid())
+            name = pw.pw_gecos.split(",")[0] or pw.pw_name
+        except KeyError:
+            name = os.environ.get("USER", "")
+        n = Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        n.get_style_context().add_class("user-name")
+        osr = os_release()
+        s = Gtk.Label(label=osr.get("PRETTY_NAME", "MangOS"), xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        s.get_style_context().add_class("user-sub")
+        tb.pack_start(n, False, False, 0); tb.pack_start(s, False, False, 0)
+        box.pack_start(tb, True, True, 0)
+        row.add(box)
+        row.keywords = "about computer mac informazioni"
+        return row
+
+    def item_row(self, item, group):
+        row = Gtk.ListBoxRow()
+        row.item = item
+        row.group = group
+        box = Gtk.Box(spacing=10)
+        box.pack_start(tile(item[3], item[4]), False, False, 0)
+        box.pack_start(Gtk.Label(label=tr(item[1], item[2]), xalign=0,
+                                 ellipsize=Pango.EllipsizeMode.END), True, True, 0)
+        row.add(box)
+        row.keywords = " ".join((item[1], item[2], item[7])).lower()
+        return row
+
+    def header_row(self, row, before):
+        if before is not None and before.group != row.group and not self.search.get_text():
+            sep = Gtk.Box(); sep.get_style_context().add_class("settings-group-sep")
+            row.set_header(sep)
+        else:
+            row.set_header(None)
+
+    def filter_row(self, row):
+        q = self.search.get_text().strip().lower()
+        return not q or all(w in row.keywords for w in q.split())
+
+    def find_row(self, pane):
+        i = 0
+        while True:
+            r = self.listbox.get_row_at_index(i)
+            if r is None:
+                return None
+            if r.item and r.item[0] == pane:
+                return r
+            i += 1
+
+    def on_key(self, w, ev):
+        if ev.state & Gdk.ModifierType.CONTROL_MASK and ev.keyval in (Gdk.KEY_f, Gdk.KEY_F):
+            self.search.grab_focus(); return True
+        if ev.keyval == Gdk.KEY_Escape and self.search.get_text():
+            self.search.set_text(""); return True
+        return False
+
+    # ---- content pages
+    def stop_child(self):
+        if self.child and self.child.poll() is None:
+            try:
+                self.child.send_signal(signal.SIGTERM)
+            except OSError:
+                pass
+        self.child = None
+        for c in self.stack.get_children():
+            c.destroy()
+
+    def page_header(self, item, note=None):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=24, margin_bottom=6)
+        top = Gtk.Box(spacing=12)
+        top.pack_start(tile(item[3], item[4], 34, 20), False, False, 0)
+        t = Gtk.Label(label=tr(item[1], item[2]), xalign=0)
+        t.get_style_context().add_class("pane-title")
+        top.pack_start(t, False, False, 0)
+        box.pack_start(top, False, False, 0)
+        if note:
+            n = Gtk.Label(label=note, xalign=0, wrap=True)
+            n.get_style_context().add_class("pane-note")
+            box.pack_start(n, False, False, 0)
+        return box
+
+    def on_select(self, lb, row):
+        if row is None:
+            return
+        self.stop_child()
+        if row.item is None:
+            page = self.info_page()
+        elif row.item[6]:
+            page = self.embed_page(row.item)
+        else:
+            page = self.external_page(row.item)
+        self.stack.add(page)
+        page.show_all()
+        self.stack.set_visible_child(page)
+
+    def on_activate(self, lb, row):
+        # a click (or Enter) opens what cannot be embedded; arrow keys only browse
+        if row.item is None:
+            if shutil.which("mangos-about"):
+                subprocess.Popen(["mangos-about"])
+        elif not row.item[6]:
+            self.launch(row.item)
+
+    def info_page(self):
+        osr = os_release()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, valign=Gtk.Align.CENTER,
+                      halign=Gtk.Align.CENTER)
+        img = Gtk.Image.new_from_icon_name("mangos-logo", Gtk.IconSize.DIALOG); img.set_pixel_size(96)
+        box.pack_start(img, False, False, 0)
+        t = Gtk.Label(label=osr.get("PRETTY_NAME", "MangOS")); t.get_style_context().add_class("pane-title")
+        box.pack_start(t, False, False, 0)
+        n = Gtk.Label(label=tr("Details are in About This Computer.",
+                               "I dettagli sono in Informazioni su questo computer."))
+        n.get_style_context().add_class("pane-note")
+        box.pack_start(n, False, False, 0)
+        return box
+
+    def embed_page(self, item):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        page.pack_start(self.page_header(item), False, False, 0)
+        socket = Gtk.Socket(hexpand=True, vexpand=True)
+        page.pack_start(socket, True, True, 0)
+        wait = Gtk.Spinner(active=True, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        page.pack_start(wait, False, False, 12)
+        state = {"plugged": False}
+
+        def plugged(*_):
+            state["plugged"] = True
+            wait.destroy()
+
+        def removed(*_):
+            # the dialog closed itself (its Close/Help button): go back to the list
+            GLib.idle_add(self.closed_page, page, item)
+            return True
+        socket.connect("plug-added", plugged)
+        socket.connect("plug-removed", removed)
+
+        def start():
+            if not page.get_mapped():
+                return True
+            sid = socket.get_id()
+            try:
+                self.child = subprocess.Popen(item[5] + [f"--socket-id={sid}"])
+            except OSError:
+                self.closed_page(page, item)
+                return False
+
+            def check():
+                if not state["plugged"] and page.get_parent():
+                    # e.g. already running elsewhere: it opened its own window
+                    wait.destroy()
+                    page.pack_start(self.open_button(item, tr(
+                        "It opened in its own window.", "Si è aperto in una finestra separata.")),
+                        False, False, 12)
+                    page.show_all()
+                return False
+            GLib.timeout_add_seconds(6, check)
+            return False
+        GLib.idle_add(start)
+        return page
+
+    def closed_page(self, page, item):
+        if page.get_parent() is None:
+            return False
+        for c in page.get_children()[1:]:
+            c.destroy()
+        page.pack_start(self.open_button(item, None, reopen=True), False, False, 12)
+        page.show_all()
+        return False
+
+    def open_button(self, item, note, reopen=False):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, halign=Gtk.Align.START, margin=24)
+        if note:
+            l = Gtk.Label(label=note, xalign=0); l.get_style_context().add_class("pane-note")
+            box.pack_start(l, False, False, 0)
+        b = Gtk.Button(label=tr("Show Again", "Mostra di nuovo") if reopen else tr("Open", "Apri"))
+        b.get_style_context().add_class("suggested-action")
+        if reopen:
+            b.connect("clicked", lambda *_: self.on_select(self.listbox, self.listbox.get_selected_row()))
+        else:
+            b.connect("clicked", lambda *_: self.launch(item))
+        box.pack_start(b, False, False, 0)
+        return box
+
+    def external_page(self, item):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        page.pack_start(self.page_header(item, tr("Opens in its own window.", "Si apre in una finestra separata.")),
+                        False, False, 0)
+        center = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, valign=Gtk.Align.CENTER,
+                         halign=Gtk.Align.CENTER, vexpand=True)
+        center.pack_start(tile(item[3], item[4], 72, 40, big=True), False, False, 0)
+        b = Gtk.Button(label=tr("Open ", "Apri ") + tr(item[1], item[2]))
+        b.get_style_context().add_class("suggested-action")
+        b.connect("clicked", lambda *_: self.launch(item))
+        center.pack_start(b, False, False, 0)
+        page.pack_start(center, True, True, 0)
+        return page
+
+    @staticmethod
+    def launch(item):
+        try:
+            subprocess.Popen(item[5])
+        except OSError:
+            pass
+
+
+def main():
+    GLib.set_prgname("mangos-settings")
+    Gdk.set_program_class("mangos-settings")   # WM_CLASS = StartupWMClass: one dock icon
+    load_css()
+    p = Gtk.CssProvider(); p.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = Settings(sys.argv[1] if len(sys.argv) > 1 else None)
+
+    def quit_all(*_):
+        w.stop_child()
+        Gtk.main_quit()
+    w.connect("destroy", quit_all)
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

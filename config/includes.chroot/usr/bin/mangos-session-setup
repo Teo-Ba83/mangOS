@@ -28,6 +28,12 @@ add_dock_item() { # name desktop-id
 }
 add_dock_item mangos-store mangos-store
 
+# The dock's Settings item now opens MangOS System Settings (gear icon).
+di=$HOME/.config/plank/dock1/launchers/xfce-settings-manager.dockitem
+if [ -f "$di" ] && grep -q 'xfce-settings-manager.desktop' "$di"; then
+  sed -i 's|xfce-settings-manager.desktop|mangos-settings.desktop|' "$di"
+fi
+
 # Light mode used the "WhiteSur" icons, whose panel icons are white: Wi-Fi,
 # volume and battery were invisible on the light top bar. Use WhiteSur-light.
 if [ "$(xfconf-query -c xsettings -p /Net/IconThemeName 2>/dev/null)" = WhiteSur ]; then

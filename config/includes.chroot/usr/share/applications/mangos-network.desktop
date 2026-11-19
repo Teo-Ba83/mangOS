@@ -7,6 +7,6 @@ Comment[it]=Connetti, disconnetti e dimentica reti Wi-Fi; DHCP o IP manuale
 Exec=mangos-network
 Icon=preferences-system-network
 Terminal=false
-Categories=Settings;HardwareSettings;X-XFCE-SettingsDialog;X-XFCE-HardwareSettings;X-MangOS-Launchpad;
+Categories=Settings;HardwareSettings;X-XFCE-SettingsDialog;X-XFCE-HardwareSettings;
 Keywords=network;wifi;wireless;ethernet;ip;dhcp;dns;rete;
 StartupNotify=true

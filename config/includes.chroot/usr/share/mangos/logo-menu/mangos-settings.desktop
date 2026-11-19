@@ -2,6 +2,6 @@
 Type=Application
 Name=System Settings…
 Name[it]=Impostazioni di sistema…
-Exec=xfce4-settings-manager
+Exec=mangos-settings
 Icon=mangos-logo
 Terminal=false

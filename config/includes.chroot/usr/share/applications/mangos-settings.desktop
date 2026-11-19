@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=System Settings
+Name[it]=Impostazioni di sistema
+Comment=Wi-Fi, sound, appearance, dock, keyboard, trackpad and more
+Comment[it]=Wi-Fi, suono, aspetto, dock, tastiera, trackpad e altro
+Exec=mangos-settings
+Icon=preferences-system
+Terminal=false
+StartupWMClass=mangos-settings
+Categories=Settings;X-MangOS-Launchpad;
+Keywords=settings;preferences;control;impostazioni;preferenze;
+StartupNotify=true

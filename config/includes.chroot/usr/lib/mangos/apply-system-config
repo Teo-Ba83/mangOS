@@ -84,8 +84,9 @@ pref("widget.gtk.overlay-scrollbars.enabled", true);
 pref("layout.css.prefers-color-scheme.content-override", 2);
 FF
 
-# Launchpad: System Settings shown like on a Mac; clutter hidden.
-sed -i '/^Categories=/{/X-MangOS-Launchpad/!s/$/X-MangOS-Launchpad;/}' /usr/share/applications/xfce-settings-manager.desktop 2>/dev/null || true
+# Launchpad: MangOS System Settings (mangos-settings) shown like on a Mac;
+# the Xfce Settings Manager it replaces and other clutter hidden.
+sed -i '/^Categories=/s/X-MangOS-Launchpad;//' /usr/share/applications/xfce-settings-manager.desktop 2>/dev/null || true
 rm -f /etc/xdg/autostart/calamares-desktop-icon.desktop
 for f in xfce4-about debian-xterm debian-uxterm display-im6.q16 im-config ibus-setup \
          xfce4-run org.xfce.xfce4-appfinder xfce4-session-logout lightdm-gtk-greeter-settings \
@@ -119,7 +120,7 @@ dock firefox-esr           firefox-esr
 dock vlc                   vlc
 dock mangos-store          mangos-store
 dock xfce4-terminal        xfce4-terminal
-dock xfce-settings-manager xfce-settings-manager
+dock xfce-settings-manager mangos-settings   # same item name: dock order kept
 artcraft_launcher=""; wordcraft=""; pdfcraft=""; photocraft=""
 for app in artcraft-launcher wordcraft pdfcraft photocraft; do
   id=$(find_desktop "$app"); var=$(echo $app | tr - _)
