@@ -45,6 +45,10 @@ done
   || { echo "WhiteSur icon theme failed:" >&2; tail -30 "$TMP/icons.log" >&2; exit 1; }
 for t in WhiteSur WhiteSur-light WhiteSur-dark; do
   rm -rf "$DEST/usr/share/icons/$t"; cp -a "$TMP/icons/$t" "$DEST/usr/share/icons/"
+  # "preferences/32" holds flat icons meant for settings lists, but it is
+  # declared scalable up to 256 px, so the dock (44 px) showed the flat Files
+  # and System Settings icons instead of the Mac-style ones. Keep it at 32 px.
+  sed -i '/^\[preferences\(@2x\)\?\/32\]$/,/^$/s/^MaxSize=.*/MaxSize=32/' "$DEST/usr/share/icons/$t/index.theme"
 done
 
 rm -rf "$DEST/usr/share/icons/WhiteSur-cursors"
