@@ -28,6 +28,12 @@ add_dock_item() { # name desktop-id
 }
 add_dock_item mangos-store mangos-store
 
+# Light mode used the "WhiteSur" icons, whose panel icons are white: Wi-Fi,
+# volume and battery were invisible on the light top bar. Use WhiteSur-light.
+if [ "$(xfconf-query -c xsettings -p /Net/IconThemeName 2>/dev/null)" = WhiteSur ]; then
+  xfconf-query -c xsettings -p /Net/IconThemeName -s WhiteSur-light
+fi
+
 if $live; then
   # Never lock or blank the screen in the live session (e.g. while installing).
   xfconf-query -c xfce4-session -p /shutdown/LockScreen -n -t bool -s false

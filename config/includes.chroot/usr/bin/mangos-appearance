@@ -4,7 +4,7 @@
 set -e
 mode=${1:-light}
 case "$mode" in
-  light) gtk=WhiteSur-Light; icons=WhiteSur;      wall=mangos-light; scheme=prefer-light ;;
+  light) gtk=WhiteSur-Light; icons=WhiteSur-light; wall=mangos-light; scheme=prefer-light ;;
   dark)  gtk=WhiteSur-Dark;  icons=WhiteSur-dark; wall=mangos-dark;  scheme=prefer-dark ;;
   *) echo "usage: $0 light|dark" >&2; exit 2 ;;
 esac
