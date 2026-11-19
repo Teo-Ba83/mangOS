@@ -132,8 +132,10 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   among Debian users that are not installed yet, three new ones each ISO
   week. Debian publishes no weekly download counts, so this is "most used",
   not "most downloaded this week". The list is downloaded once a week
-  (about 1 MB, first part of the popcon table); without internet the Store
-  shows curated suggestions instead.
+  (about 1 MB, first part of the popcon table). If popcon.debian.org cannot
+  be reached, the Store uses the snapshot taken when the MangOS build was
+  made (/usr/share/mangos/popcon-top.txt), then curated suggestions; the
+  reason is written to ~/.cache/mangos-store/popcon.log.
 - Each section starts with a curated list of well-known apps, then the rest
   alphabetically.
 - Installing needs the administrator password (as on a Mac). Apps that are

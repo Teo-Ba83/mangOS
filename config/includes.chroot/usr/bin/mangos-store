@@ -313,38 +313,63 @@ class GetButton(Gtk.Button):
 
 
 # ------------------------------------------------------- apps of the week
-POPCON_URL = "https://popcon.debian.org/by_vote"
+POPCON_URLS = ("https://popcon.debian.org/by_vote", "http://popcon.debian.org/by_vote")
+POPCON_SNAPSHOT = "/usr/share/mangos/popcon-top.txt"   # taken when this MangOS build was made
 WEEK_POOL = 15
 
 
-def popcon_names(max_rank=9000):
-    """Package names in popcon's order (most used first), cached for a week."""
+def parse_popcon(lines, max_rank=9000):
+    names = []
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        p = line.split()
+        if len(p) < 2 or not p[0].isdigit():
+            continue
+        names.append(p[1])
+        if int(p[0]) >= max_rank:
+            break
+    return names
+
+
+def popcon_names():
+    """Package names in popcon's order (most used first), refreshed weekly.
+    Returns (names, source): 'live', 'cache' or 'snapshot'."""
+    os.makedirs(CACHE, exist_ok=True)
     path = os.path.join(CACHE, "popcon.json")
     try:
         d = json.load(open(path))
-        if time.time() - d["time"] < 7 * 86400 and d["names"]:
-            return d["names"]
+        if time.time() - d["time"] < 7 * 86400 and len(d["names"]) > 100:
+            return d["names"], "cache"
     except Exception:
         d = None
-    names = []
+    errors = []
+    for url in POPCON_URLS:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "MangoStore/1.0 (MangOS)"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                names = parse_popcon(raw.decode("utf-8", "replace") for raw in r)
+            if len(names) > 100:
+                json.dump({"time": time.time(), "names": names}, open(path, "w"))
+                return names, "live"
+            errors.append(f"{url}: only {len(names)} names")
+        except Exception as e:
+            errors.append(f"{url}: {e!r}")
     try:
-        with urllib.request.urlopen(POPCON_URL, timeout=20) as r:
-            for raw in r:
-                line = raw.decode("utf-8", "replace")
-                if line.startswith("#"):
-                    continue
-                p = line.split()
-                if len(p) < 4 or not p[0].isdigit():
-                    continue
-                names.append(p[1])
-                if int(p[0]) >= max_rank:
-                    break
-        os.makedirs(CACHE, exist_ok=True)
-        json.dump({"time": time.time(), "names": names}, open(path, "w"))
-    except Exception:
-        if d:
-            return d["names"]       # stale is better than nothing
-    return names
+        with open(os.path.join(CACHE, "popcon.log"), "w") as log:
+            log.write(time.strftime("%Y-%m-%d %H:%M ") + "\n".join(errors) + "\n")
+    except OSError:
+        pass
+    if d and d.get("names"):
+        return d["names"], "cache"        # stale is better than nothing
+    try:
+        with open(POPCON_SNAPSHOT) as f:
+            names = parse_popcon(f)
+        if names:
+            return names, "snapshot"
+    except OSError:
+        pass
+    return [], None
 
 
 def weekly_picks(cat, names):
@@ -523,9 +548,12 @@ class Store(Gtk.Window):
             box.pack_start(t, False, False, 0); box.pack_start(self.grid(apps[:12]), False, False, 0)
         self.page(box, "discover")
 
+        token = object()          # only the latest Discover page gets the result
+        self.week_token = token
+
         def work():
-            names = popcon_names()
-            GLib.idle_add(self.show_week, weekly_picks(self.cat, names), bool(names))
+            names, _src = popcon_names()
+            GLib.idle_add(self.show_week, weekly_picks(self.cat, names), bool(names), token)
         threading.Thread(target=work, daemon=True).start()
 
     # ---- sliding banner: ArtCraft + the apps of the week
@@ -633,8 +661,12 @@ class Store(Gtk.Window):
             a.x = a.y = 0
         return ox + a.x <= px < ox + a.x + a.width and oy + a.y <= py < oy + a.y + a.height
 
-    def show_week(self, picks, from_popcon):
+    def show_week(self, picks, from_popcon, token=None):
+        if token is not getattr(self, "week_token", None):
+            return False
         if not picks or not getattr(self, "week_box", None) or self.week_box.get_toplevel() is not self:
+            return False
+        if "week0" in self.slide_names:
             return False
         for i, c in enumerate(picks):
             self.add_slide(f"week{i}", f"hero-week{i + 1}",

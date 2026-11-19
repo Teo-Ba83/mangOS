@@ -80,6 +80,9 @@ for deb in "$CACHE"/artcraft/*.deb; do
   EXPECTED_PKGS="$EXPECTED_PKGS $pkg"
   echo "ArtCraft package: $pkg $ver ($arch)"
 done
+log "Popularity Contest snapshot (Mango Store apps of the week)"
+"$ROOT/scripts/fetch-popcon.sh" "$OVL"
+
 log "Fetching LocalSend (AirDrop-like file sharing)"
 if "$ROOT/scripts/fetch-localsend.sh" "$CACHE/localsend"; then
   deb="$CACHE/localsend/localsend.deb"
