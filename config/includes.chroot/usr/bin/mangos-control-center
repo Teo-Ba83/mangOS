@@ -87,20 +87,79 @@ def night_state():
     return out.strip() == "on"
 
 
-def brightness():
-    rc, out = run("brightnessctl", "-m", "-c", "backlight")
-    if rc != 0 or not out:
+BL = "/sys/class/backlight"
+HELPER = "/usr/sbin/xfpm-power-backlight-helper"
+
+
+def backlight_device():
+    """The backlight xfce4-power-manager (and so the brightness keys) uses:
+    firmware, then platform, then raw interfaces."""
+    try:
+        devs = os.listdir(BL)
+    except OSError:
         return None
-    m = re.search(r",(\d+)%,", out)
-    return int(m.group(1)) if m else None
+    for kind in ("firmware", "platform", "raw"):
+        for d in sorted(devs):
+            try:
+                if open(f"{BL}/{d}/type").read().strip() == kind:
+                    return d
+            except OSError:
+                pass
+    return None
+
+
+def brightness():
+    """Current brightness in percent, read straight from sysfs (cheap)."""
+    d = backlight_device()
+    if not d:
+        return None
+    try:
+        cur = int(open(f"{BL}/{d}/brightness").read())
+        mx = int(open(f"{BL}/{d}/max_brightness").read())
+        return round(cur * 100 / mx) if mx > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+def set_brightness(pct):
+    """Through the power manager's helper (polkit: no password for the
+    logged-in user), the same way as the brightness keys; brightnessctl
+    as a fallback (works when the user may write the backlight)."""
+    d = backlight_device()
+    if d and os.path.exists(HELPER):
+        try:
+            mx = int(open(f"{BL}/{d}/max_brightness").read())
+            val = max(1, round(mx * max(pct, 3) / 100))
+            if run("pkexec", HELPER, "--set-brightness", str(val))[0] == 0:
+                return
+        except (OSError, ValueError):
+            pass
+    run("brightnessctl", "-q", "-c", "backlight", "set", f"{max(pct, 3)}%")
 
 
 def volume():
+    """Volume in the same percent scale as the volume keys and the top-bar
+    sound icon (PulseAudio's, served by PipeWire)."""
+    if shutil.which("pactl"):
+        rc, out = run("pactl", "get-sink-volume", "@DEFAULT_SINK@")
+        m = re.search(r"(\d+)%", out)
+        if rc == 0 and m:
+            _, mute = run("pactl", "get-sink-mute", "@DEFAULT_SINK@")
+            return min(100, int(m.group(1))), "yes" in mute.lower()
     rc, out = run("wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@")
     m = re.search(r"Volume:\s*([\d.]+)", out)
     if rc != 0 or not m:
         return None, False
-    return min(100, round(float(m.group(1)) * 100)), "MUTED" in out
+    return min(100, round(float(m.group(1)) ** (1 / 3) * 100)), "MUTED" in out
+
+
+def set_volume(pct):
+    if shutil.which("pactl"):
+        run("pactl", "set-sink-mute", "@DEFAULT_SINK@", "0")
+        run("pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{pct}%")
+    else:   # wpctl's scale is linear: cube the percentage like PulseAudio does
+        run("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0")
+        run("wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{(pct / 100) ** 3:.4f}")
 
 
 # ---------------------------------------------------------------- UI ----
@@ -118,6 +177,7 @@ class Panel(Gtk.Window):
         if screen.get_rgba_visual() and screen.is_composited():
             self.set_visual(screen.get_rgba_visual()); self.set_app_paintable(True)
         self.updating = False
+        self.pending, self.busy, self.touched, self.live_id = {}, set(), 0, None
 
         outer = Gtk.Box(margin=10)
         self.add(outer)
@@ -311,15 +371,60 @@ class Panel(Gtk.Window):
     def on_night(self):
         self.after(["mangos-nightshift", "toggle"])
 
+    # Sliders: apply the latest value at most every 120 ms (one command at a
+    # time), and do not move the slider under the finger while it is dragged.
+    def queue(self, key, fn, v):
+        self.touched = GLib.get_monotonic_time()
+        self.pending[key] = (fn, v)
+        if key not in self.busy:
+            self.busy.add(key)
+            GLib.timeout_add(120, self.flush, key)
+
+    def flush(self, key):
+        item = self.pending.pop(key, None)
+        if item is None:
+            self.busy.discard(key)
+            return False
+
+        def work():
+            item[0](item[1])
+            GLib.idle_add(lambda: (GLib.timeout_add(60, self.flush, key), False)[1])
+        bg(work)
+        return False
+
     def on_bright(self, v):
-        bg(run, "brightnessctl", "-q", "-c", "backlight", "set", f"{max(v, 3)}%")
+        self.queue("bright", set_brightness, v)
 
     def on_vol(self, v):
-        bg(lambda: (run("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"),
-                    run("wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{v / 100:.2f}")))
+        self.queue("vol", set_volume, v)
+
+    def live(self):
+        """While open, follow the brightness and volume keys."""
+        if not self.get_visible():
+            self.live_id = None
+            return False
+        if GLib.get_monotonic_time() - self.touched > 1_500_000 and not self.busy:
+            def work():
+                b, v = brightness(), volume()
+                GLib.idle_add(self.show_levels, b, v)
+            bg(work)
+        return True
+
+    def show_levels(self, b, v):
+        if GLib.get_monotonic_time() - self.touched < 1_500_000 or self.busy:
+            return False
+        self.updating = True
+        if b is not None:
+            self.bright.set_value(b)
+        if v[0] is not None:
+            self.vol.set_value(0 if v[1] else v[0])
+        self.updating = False
+        return False
 
     def popup(self, area=None):
         self.refresh()
+        if self.live_id is None:
+            self.live_id = GLib.timeout_add(700, self.live)
         self.show_all()
         disp = Gdk.Display.get_default()
         mon = disp.get_primary_monitor() or disp.get_monitor(0)
