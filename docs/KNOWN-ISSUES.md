@@ -25,7 +25,7 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   F4 or the dock icon instead.
 - **Fan control** uses `mbpfan`; **brightness keys** use `brightnessctl`.
   **Untested on hardware.**
-- **Wi-Fi (Broadcom BCM4321/BCM4328, PCI 14e4:4328 on the MacBook3,1).**
+- **Wi-Fi (Broadcom BCM4321/BCM4328, PCI 14e4:4328 on the MacBook3,1 and 4,1).**
   MangOS uses the proprietary `wl` driver (broadcom-sta-dkms), already
   compiled for the ISO's kernel, so it works offline. `b43`, `b43legacy`,
   `ssb`, `bcma`, `brcmsmac`, `brcm80211` and `b44` are blacklisted because
@@ -42,7 +42,7 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 - **Dual-band routers and mesh extenders.** On a network that is on both
   2.4 and 5 GHz under one name (e.g. a Virgin Media hub with an extender),
   `wl` associates on 5 GHz but often gets no address (DHCP), so the Wi-Fi
-  icon keeps spinning; on 2.4 GHz it works (seen on the real MacBook3,1).
+  icon keeps spinning; on 2.4 GHz it works (seen on the real MacBook4,1).
   After a network connects once, MangOS locks its saved profile to 2.4 GHz
   if that network is also on 2.4 GHz (5 GHz-only networks are left alone).
   Manually: `sudo nmcli connection modify "<name>" 802-11-wireless.band bg`;
@@ -54,7 +54,7 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   it reconnects. Setting the mesh to WPA2-only (AES), where the mesh app
   allows it, is the other fix. Switching driver now unties saved networks
   from the old interface name, so they keep working.
-- **Speed, measured on the MacBook3,1** (Speedtest, Virgin hub on 2.4 GHz,
+- **Speed, measured on the MacBook4,1** (Speedtest, Virgin hub on 2.4 GHz,
   same room): `wl` 80 Mbit/s down, 26 up; `b43` 9 down, 10 up (Tenda mesh
   node with `b43`: about 15). `wl` is much faster; `b43` is the choice only
   for networks `wl` cannot reconnect to (the mixed WPA/WPA2 mesh above).
