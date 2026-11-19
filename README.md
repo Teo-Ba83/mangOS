@@ -1,4 +1,4 @@
-<p align="center"><img src="branding/logo/png/mangos-logo-128.png" alt="MangOS logo" width="96"></p>
+<p align="center"><img src="branding/logo/mangos-logo-full.png" alt="MangOS logo" width="180"></p>
 
 # MangOS
 

@@ -23,8 +23,9 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   basic multi-finger data: tap, two-finger scroll and two-finger click work;
   pinch/four-finger gestures (e.g. to open Launchpad) do not. Use Cmd+Space,
   F4 or the dock icon instead.
-- **Fan control** uses `mbpfan`; **brightness keys** use `brightnessctl`.
-  **Untested on hardware.**
+- **Fan control** uses `mbpfan`. **Brightness keys** (F1/F2) and the Control
+  Center slider use the power manager's backlight helper (no password) and
+  never go below 10 %, so the screen always stays lit.
 - **Wi-Fi (Broadcom BCM4321/BCM4328, PCI 14e4:4328 on the MacBook3,1 and 4,1).**
   MangOS uses the proprietary `wl` driver (broadcom-sta-dkms), already
   compiled for the ISO's kernel, so it works offline. `b43`, `b43legacy`,

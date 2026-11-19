@@ -1,65 +1,11 @@
 #!/bin/sh
-# Generates the MangOS logo SVGs and PNG sizes. Original artwork: a tilted,
-# kidney-shaped mango with a bite on its belly, a stem and a single leaf.
+# Generates the MangOS logo PNG sizes, the Launchpad icon, installer slides,
+# and installs everything into the image. Artwork: a glossy mango with a bite,
+# a stem and a leaf (mangos-logo-full-source.png, see import-logo.py).
 set -e
 cd "$(dirname "$0")"
-TF='transform="translate(512 0) scale(-1 1) translate(250 278) scale(0.84) rotate(-24) translate(-262 -270)"'
-BODY='M256 112 C344 108 392 206 384 304 C376 404 320 468 248 470 C182 472 140 420 150 348 C156 302 172 274 164 222 C156 160 196 116 256 112 Z'
-BITE='<circle cx="392" cy="352" r="56"/>'
-STEM='M254 120 C252 94 258 72 272 54'
-LEAF='M270 62 C300 18 370 4 424 26 C396 74 330 98 270 62 Z'
-VEIN='M280 60 C320 44 366 34 408 30'
-
-cat > mangos-logo.svg <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <title>MangOS</title>
-  <defs>
-    <linearGradient id="fruit" x1="0.15" y1="0" x2="0.85" y2="1">
-      <stop offset="0" stop-color="#9BD34A"/>
-      <stop offset="0.30" stop-color="#FFD23F"/>
-      <stop offset="0.65" stop-color="#FF9F1C"/>
-      <stop offset="1" stop-color="#EF4A2E"/>
-    </linearGradient>
-    <radialGradient id="shine" cx="0.35" cy="0.3" r="0.45">
-      <stop offset="0" stop-color="#fff" stop-opacity=".45"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="leaf" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#23893F"/>
-      <stop offset="1" stop-color="#6CCB7A"/>
-    </linearGradient>
-    <mask id="bite" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
-      <rect x="-100" y="-100" width="712" height="712" fill="#fff"/><g fill="#000">$BITE</g>
-    </mask>
-  </defs>
-  <g $TF>
-    <g mask="url(#bite)">
-      <path d="$BODY" fill="url(#fruit)"/>
-      <path d="$BODY" fill="url(#shine)"/>
-    </g>
-    <path d="$STEM" fill="none" stroke="#6B4226" stroke-width="16" stroke-linecap="round"/>
-    <path d="$LEAF" fill="url(#leaf)"/>
-    <path d="$VEIN" fill="none" stroke="#1C6E33" stroke-width="5" stroke-linecap="round" opacity=".5"/>
-  </g>
-</svg>
-EOF
-
-mono() { cat <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <title>MangOS</title>
-  <defs><mask id="bite" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
-    <rect x="-100" y="-100" width="712" height="712" fill="#fff"/><g fill="#000">$BITE</g></mask></defs>
-  <g $TF fill="$1">
-    <path d="$BODY" mask="url(#bite)"/>
-    <path d="$LEAF"/>
-    <path d="$STEM" fill="none" stroke="$1" stroke-width="24" stroke-linecap="round"/>
-  </g>
-</svg>
-EOF
-}
-mono '#1d1d1f' > mangos-logo-mono-dark.svg
-mono '#ffffff' > mangos-logo-mono-light.svg
-mono '#bebebe' > mangos-logo-symbolic.svg
+# mangos-logo.svg, mangos-logo-mono-*.svg and mangos-logo-symbolic.svg are made
+# from the artwork mangos-logo-full-source.png by import-logo.py (committed).
 rm -rf png; mkdir -p png
 for s in 16 22 24 32 48 64 128 256 512; do
   for v in mangos-logo mangos-logo-mono-dark mangos-logo-mono-light; do
@@ -127,7 +73,7 @@ DEST=${1:-}
 [ -n "$DEST" ] || exit 0
 L=$DEST/usr/share/mangos/logo
 mkdir -p "$L"
-cp mangos-logo*.svg mangos-launchpad.svg "$L/"
+cp mangos-logo*.svg mangos-launchpad.svg mangos-logo-full.png "$L/"
 cp png/*.png "$L/"
 for s in 16 22 24 32 48 64 128 256 512; do
   d=$DEST/usr/share/icons/hicolor/${s}x${s}/apps; mkdir -p "$d"

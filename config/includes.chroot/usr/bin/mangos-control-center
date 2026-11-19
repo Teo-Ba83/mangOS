@@ -122,19 +122,8 @@ def brightness():
 
 
 def set_brightness(pct):
-    """Through the power manager's helper (polkit: no password for the
-    logged-in user), the same way as the brightness keys; brightnessctl
-    as a fallback (works when the user may write the backlight)."""
-    d = backlight_device()
-    if d and os.path.exists(HELPER):
-        try:
-            mx = int(open(f"{BL}/{d}/max_brightness").read())
-            val = max(1, round(mx * max(pct, 3) / 100))
-            if run("pkexec", HELPER, "--set-brightness", str(val))[0] == 0:
-                return
-        except (OSError, ValueError):
-            pass
-    run("brightnessctl", "-q", "-c", "backlight", "set", f"{max(pct, 3)}%")
+    """Same backlight and helper as the brightness keys; never below 10 %."""
+    run("mangos-brightness", "set", str(max(10, pct)))
 
 
 def volume():
@@ -213,7 +202,7 @@ class Panel(Gtk.Window):
 
         # sliders
         self.bright_tile, self.bright = self.slider(box, tr("Display", "Monitor"),
-                                                    "display-brightness-symbolic", self.on_bright)
+                                                    "display-brightness-symbolic", self.on_bright, low=10)
         self.vol_tile, self.vol = self.slider(box, tr("Sound", "Suono"), "audio-volume-high-symbolic",
                                               self.on_vol, button_cb=lambda *_: self.launch(["pavucontrol"]))
 
@@ -236,6 +225,40 @@ class Panel(Gtk.Window):
 
         self.connect("key-press-event", lambda w, e: e.keyval == Gdk.KEY_Escape and self.hide())
         self.connect("focus-out-event", lambda *_: GLib.timeout_add(150, self.hide_if_unfocused))
+        # A click anywhere outside closes the panel, like a menu: while it is
+        # open the pointer is grabbed (clicks inside still reach the widgets).
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.connect("button-press-event", self.on_press)
+        self.connect("hide", lambda *_: self.ungrab())
+        self.grabbed = False
+
+    def on_press(self, w, ev):
+        win = self.get_window()
+        if win is None:
+            return False
+        ox, oy = win.get_origin()[1:]
+        ww, wh = self.get_allocated_width(), self.get_allocated_height()
+        margin = 10    # transparent border around the rounded panel
+        if not (ox + margin <= ev.x_root < ox + ww - margin and oy + margin <= ev.y_root < oy + wh - margin):
+            self.hide()
+            return True
+        return False
+
+    def grab(self):
+        win = self.get_window()
+        if win is None or not self.get_visible():
+            return False
+        seat = Gdk.Display.get_default().get_default_seat()
+        st = seat.grab(win, Gdk.SeatCapabilities.ALL_POINTING, True, None, None, None)
+        self.grabbed = st == Gdk.GrabStatus.SUCCESS
+        if not self.grabbed:
+            GLib.timeout_add(150, self.grab)     # e.g. a button still pressed: retry
+        return False
+
+    def ungrab(self):
+        if self.grabbed:
+            Gdk.Display.get_default().get_default_seat().ungrab()
+            self.grabbed = False
 
     def hide_if_unfocused(self):
         if not self.is_active():
@@ -277,14 +300,14 @@ class Panel(Gtk.Window):
             t["sub"].set_text(sub)
         t["row"].set_sensitive(sensitive)
 
-    def slider(self, parent, title, icon, cb, button_cb=None):
+    def slider(self, parent, title, icon, cb, button_cb=None, low=0):
         tile = self.tile_box()
         tile.set_spacing(4)
         h = Gtk.Label(label=title, xalign=0); h.get_style_context().add_class("cc-head")
         tile.pack_start(h, False, False, 0)
         r = Gtk.Box(spacing=6)
         r.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
-        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, low, 100, 1)
         sc.set_draw_value(False)
         sc.get_style_context().add_class("cc-scale")
         sc.connect("value-changed", lambda s: None if self.updating else cb(int(s.get_value())))
@@ -444,6 +467,7 @@ class Panel(Gtk.Window):
                 self.move(max(geo.x + 4, min(cx, geo.x + geo.width - ww - 4)), work.y + 2)
             return False
         GLib.timeout_add(60, fit)
+        GLib.timeout_add(200, self.grab)
 
 
 # -------------------------------------------------------------- tray ----

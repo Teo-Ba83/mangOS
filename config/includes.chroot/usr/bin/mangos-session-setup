@@ -46,6 +46,8 @@ ks '<Primary>Up' mangos-mission-control
 ks '<Primary><Shift>3' 'mangos-screenshot full' 'xfce4-screenshooter -f -s Pictures'
 ks '<Primary><Shift>4' 'mangos-screenshot area' 'xfce4-screenshooter -r -s Pictures'
 ks '<Primary><Shift>5' 'mangos-screenshot tool' 'xfce4-screenshooter'
+ks XF86MonBrightnessUp 'mangos-brightness up' 'brightnessctl -q set +10%'
+ks XF86MonBrightnessDown 'mangos-brightness down' 'brightnessctl -q set 10%-'
 
 # Quick Look in the Finder: Space (and right-click > Quick Look).
 QL_ID=1700000000000001-mangos-quicklook

@@ -15,8 +15,8 @@
       <property name="&lt;Primary&gt;&lt;Shift&gt;5" type="string" value="mangos-screenshot tool"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;t" type="string" value="xfce4-terminal"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;l" type="string" value="xflock4"/>
-      <property name="XF86MonBrightnessUp" type="string" value="brightnessctl -q set +10%"/>
-      <property name="XF86MonBrightnessDown" type="string" value="brightnessctl -q set 10%-"/>
+      <property name="XF86MonBrightnessUp" type="string" value="mangos-brightness up"/>
+      <property name="XF86MonBrightnessDown" type="string" value="mangos-brightness down"/>
     </property>
   </property>
 </channel>
