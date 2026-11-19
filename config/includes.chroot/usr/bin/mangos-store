@@ -1,11 +1,16 @@
 #!/usr/bin/python3
-"""MangOS Store: find, install and update Debian software.
+"""Mango Store: find, install and update Debian software.
 
-Layout inspired by the Mac's app store (sidebar with search and sections,
-featured card, rows of apps with a round "Get" button, app pages), built on
-Debian's AppStream catalog. Installing/removing goes through
+Layout inspired by the Mac's app store: sidebar with the Mango Store logo,
+search and sections; a sliding banner (ArtCraft and the apps of the week);
+apps on uniform rounded tiles with a round GET button that turns into a
+progress ring while installing; app pages. Built on Debian's AppStream
+catalog. The apps of the week come from the Debian Popularity Contest
+(popcon.debian.org): the most used desktop apps you do not have yet,
+three new ones each week. Installing/removing goes through
 /usr/lib/mangos/store-helper (pkexec, administrator password)."""
-import html, json, os, re, subprocess, threading, urllib.request
+import datetime, html, json, math, os, re, subprocess, threading, time, urllib.request
+import cairo
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("AppStream", "1.0")
@@ -60,28 +65,46 @@ FEATURED = {
 
 CSS = b"""
 .store-sidebar { background-color: alpha(currentColor, 0.045); border-right: 1px solid alpha(currentColor, 0.10); }
-.store-sidebar row { border-radius: 7px; margin: 1px 8px; padding: 6px 8px; }
-.store-sidebar row:selected { background-color: alpha(currentColor, 0.12); color: inherit; }
-.store-title { font-size: 28px; font-weight: 800; }
-.store-subtitle { font-size: 13px; opacity: 0.6; }
-.store-section { font-size: 19px; font-weight: 700; }
-.store-name { font-weight: 600; }
-.store-dim { opacity: 0.62; font-size: 12px; }
-.store-get { border-radius: 999px; padding: 2px 16px; font-weight: 700; min-height: 0;
-             background: alpha(currentColor, 0.09); border: none; color: #0A84FF; }
-.store-get:hover { background: alpha(currentColor, 0.16); }
+.store-sidebar list { background: transparent; }
+.store-sidebar row { border-radius: 8px; margin: 1px 10px; padding: 7px 8px; }
+.store-sidebar row:selected { background-color: #0A84FF; color: white; }
+.store-brand { font-size: 17px; font-weight: 800; }
+.store-title { font-size: 30px; font-weight: 800; }
+.store-subtitle { font-size: 12px; font-weight: 700; opacity: 0.5; }
+.store-section { font-size: 21px; font-weight: 800; }
+.store-see { color: #0A84FF; font-size: 13px; }
+.store-name { font-weight: 600; font-size: 14px; }
+.store-dim { opacity: 0.6; font-size: 12px; }
+.store-rank { font-size: 17px; font-weight: 700; opacity: 0.55; }
+.store-get { border-radius: 999px; padding: 3px 0; min-width: 76px; min-height: 0; font-size: 12px;
+             font-weight: 800; background: alpha(currentColor, 0.09); border: none; box-shadow: none;
+             color: #0A84FF; }
+.store-get:hover { background: alpha(currentColor, 0.15); }
 .store-get.primary { background: #0A84FF; color: white; }
-.store-hero { border-radius: 16px; padding: 26px; color: white;
-              background-image: linear-gradient(120deg, #F0503A, #FF8A2B 55%, #FFC24B); }
-.store-hero-title { font-size: 26px; font-weight: 800; color: white; }
+.store-get.light { background: white; color: #0A84FF; }
+.store-get.ring { background: transparent; min-width: 30px; padding: 0; }
+.store-hero { border-radius: 18px; padding: 28px 30px; color: white; min-height: 190px; }
+.hero-artcraft { background-image: linear-gradient(120deg, #F0503A, #FF8A2B 55%, #FFC24B); }
+.hero-week1 { background-image: linear-gradient(120deg, #5E35D8, #9D5CF5 60%, #E07CF0); }
+.hero-week2 { background-image: linear-gradient(120deg, #0E64D8, #2E9BF5 60%, #5AD1F5); }
+.hero-week3 { background-image: linear-gradient(120deg, #0C8E6B, #1FC08A 60%, #9BE15D); }
+.store-hero-kicker { font-size: 12px; font-weight: 800; color: alpha(white, 0.85); }
+.store-hero-title { font-size: 28px; font-weight: 800; color: white; }
 .store-hero-text { font-size: 14px; color: alpha(white, 0.92); }
-.store-hero button { border-radius: 999px; background: white; color: #E2541E; font-weight: 700; border: none; padding: 4px 18px; }
-.store-row { padding: 8px 4px; border-bottom: 1px solid alpha(currentColor, 0.08); }
-.store-big-name { font-size: 26px; font-weight: 800; }
-.store-info-key { opacity: 0.55; font-size: 11px; }
-.store-info-val { font-weight: 600; }
+.store-hero button.hero-open { border-radius: 999px; background: white; color: #333; font-weight: 800;
+                               border: none; padding: 4px 20px; box-shadow: none; }
+.store-dot { min-width: 8px; min-height: 8px; padding: 0; border-radius: 99px; border: none; box-shadow: none;
+             background: alpha(currentColor, 0.2); }
+.store-dot.active { background: alpha(currentColor, 0.65); }
+.store-arrow { border-radius: 99px; padding: 2px; background: alpha(black, 0.18); color: white; border: none; }
+.store-row { padding: 9px 4px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+.store-big-name { font-size: 28px; font-weight: 800; }
+.store-info-key { opacity: 0.5; font-size: 10px; font-weight: 800; }
+.store-info-val { font-weight: 700; font-size: 17px; opacity: .8; }
+.store-info-sub { opacity: 0.5; font-size: 11px; }
+.store-fact { border-right: 1px solid alpha(currentColor, 0.12); padding: 0 22px; }
 .store-shot { border-radius: 10px; }
-.store-back { border: none; background: none; color: #0A84FF; font-weight: 600; }
+.store-back { border: none; background: none; color: #0A84FF; font-weight: 600; box-shadow: none; }
 """
 
 
@@ -164,21 +187,187 @@ class Catalog:
         return "application-x-executable"
 
 
-def app_icon(c, size):
+def icon_pixbuf(c, size):
     f = Catalog.icon_file(c, size)
     if f:
         try:
-            return Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(f, size, size, True))
+            return GdkPixbuf.Pixbuf.new_from_file_at_scale(f, size * 2, size * 2, True)
         except GLib.Error:
             pass
-    img = Gtk.Image.new_from_icon_name(Catalog.stock_icon(c), Gtk.IconSize.DIALOG)
-    img.set_pixel_size(size)
-    return img
+    try:
+        return Gtk.IconTheme.get_default().load_icon(Catalog.stock_icon(c), size * 2, 0)
+    except GLib.Error:
+        return Gtk.IconTheme.get_default().load_icon("application-x-executable", size * 2, 0)
+
+
+def rounded(cr, x, y, w, h, r):
+    cr.new_sub_path()
+    cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+    cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+    cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+    cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+    cr.close_path()
+
+
+def opaque_corners(pb):
+    """True for icons that are already full squares (they get clipped, not framed)."""
+    if not pb.get_has_alpha():
+        return True
+    w, h, rs, n = pb.get_width(), pb.get_height(), pb.get_rowstride(), pb.get_n_channels()
+    px = pb.get_pixels()
+    pts = [(int(w * .08), int(h * .5)), (int(w * .92), int(h * .5)), (int(w * .5), int(h * .08)), (int(w * .5), int(h * .92))]
+    return all(px[y * rs + x * n + 3] > 230 for x, y in pts)
+
+
+class Tile(Gtk.DrawingArea):
+    """An app icon on a uniform rounded tile, like on the Mac."""
+    def __init__(self, c, size, light=False):
+        super().__init__()
+        self.size = size
+        self.light = light
+        self.pb = icon_pixbuf(c, size)
+        self.full = opaque_corners(self.pb)
+        self.set_size_request(size, size)
+        self.set_valign(Gtk.Align.CENTER)
+        self.connect("draw", self.on_draw)
+
+    def on_draw(self, w, cr):
+        s = self.size
+        r = s * 0.225
+        fg = self.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        dark = (fg.red + fg.green + fg.blue) / 3 > 0.6 and not self.light
+        # soft shadow
+        rounded(cr, 0.5, 1.5, s - 1, s - 1.5, r); cr.set_source_rgba(0, 0, 0, 0.10); cr.fill()
+        rounded(cr, 0.5, 0.5, s - 1, s - 1.5, r)
+        cr.save(); cr.clip_preserve()
+        if self.full:
+            pb = self.pb.scale_simple(s, s, GdkPixbuf.InterpType.BILINEAR)
+            Gdk.cairo_set_source_pixbuf(cr, pb, 0, 0); cr.paint()
+        else:
+            if dark:
+                cr.set_source_rgb(0.23, 0.23, 0.25)
+            else:
+                g = cairo.LinearGradient(0, 0, 0, s); g.add_color_stop_rgb(0, 1, 1, 1); g.add_color_stop_rgb(1, .94, .94, .96)
+                cr.set_source(g)
+            cr.fill()
+            inner = int(s * 0.72)
+            pb = self.pb.scale_simple(inner, int(inner * self.pb.get_height() / max(1, self.pb.get_width())),
+                                      GdkPixbuf.InterpType.BILINEAR)
+            Gdk.cairo_set_source_pixbuf(cr, pb, (s - pb.get_width()) / 2, (s - pb.get_height()) / 2)
+            cr.paint()
+        cr.restore()
+        rounded(cr, 0.5, 0.5, s - 1, s - 1.5, r)
+        cr.set_source_rgba(0, 0, 0, 0.10 if not dark else 0.35); cr.set_line_width(1); cr.stroke()
+        return False
+
+
+def app_icon(c, size):
+    return Tile(c, size)
+
+
+class GetButton(Gtk.Button):
+    """GET / OPEN pill; while installing, a progress ring with a stop square."""
+    def __init__(self, c, style=None):
+        super().__init__(valign=Gtk.Align.CENTER)
+        self.app = c
+        self.frac = None
+        ctx = self.get_style_context(); ctx.add_class("store-get")
+        if style:
+            ctx.add_class(style)
+        self.stack = Gtk.Stack()
+        self.lab = Gtk.Label()
+        self.ring = Gtk.DrawingArea(); self.ring.set_size_request(26, 26)
+        self.ring.connect("draw", self.draw_ring)
+        self.stack.add_named(self.lab, "label"); self.stack.add_named(self.ring, "ring")
+        self.lab.show(); self.ring.show(); self.stack.show()   # a Stack only switches to shown children
+        self.add(self.stack)
+
+    def set_text(self, text):
+        self.frac = None
+        self.get_style_context().remove_class("ring")
+        self.lab.set_text(text.upper())
+        self.stack.set_visible_child_name("label")
+
+    def set_progress(self, frac):
+        self.frac = frac
+        self.get_style_context().add_class("ring")
+        self.stack.set_visible_child_name("ring")
+        self.ring.queue_draw()
+
+    def draw_ring(self, w, cr):
+        size = min(w.get_allocated_width(), w.get_allocated_height())
+        cx = w.get_allocated_width() / 2; cy = w.get_allocated_height() / 2; r = size / 2 - 2
+        cr.set_line_width(2.4)
+        cr.set_source_rgba(0.5, 0.5, 0.55, 0.35); cr.arc(cx, cy, r, 0, 2 * math.pi); cr.stroke()
+        cr.set_source_rgb(0.04, 0.52, 1.0)
+        f = self.frac or 0.0
+        if f <= 0.01:      # waiting (password, download start): a spinning arc
+            a = (time.monotonic() * 5) % (2 * math.pi)
+            cr.arc(cx, cy, r, a, a + 1.3)
+            GLib.timeout_add(40, lambda: (w.queue_draw(), False)[1])
+        else:
+            cr.arc(cx, cy, r, -math.pi / 2, -math.pi / 2 + 2 * math.pi * f)
+        cr.stroke()
+        cr.rectangle(cx - 3.5, cy - 3.5, 7, 7); cr.fill()
+        return False
+
+
+# ------------------------------------------------------- apps of the week
+POPCON_URL = "https://popcon.debian.org/by_vote"
+WEEK_POOL = 15
+
+
+def popcon_names(max_rank=9000):
+    """Package names in popcon's order (most used first), cached for a week."""
+    path = os.path.join(CACHE, "popcon.json")
+    try:
+        d = json.load(open(path))
+        if time.time() - d["time"] < 7 * 86400 and d["names"]:
+            return d["names"]
+    except Exception:
+        d = None
+    names = []
+    try:
+        with urllib.request.urlopen(POPCON_URL, timeout=20) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "replace")
+                if line.startswith("#"):
+                    continue
+                p = line.split()
+                if len(p) < 4 or not p[0].isdigit():
+                    continue
+                names.append(p[1])
+                if int(p[0]) >= max_rank:
+                    break
+        os.makedirs(CACHE, exist_ok=True)
+        json.dump({"time": time.time(), "names": names}, open(path, "w"))
+    except Exception:
+        if d:
+            return d["names"]       # stale is better than nothing
+    return names
+
+
+def weekly_picks(cat, names):
+    """Three most-used desktop apps you do not have yet; a new trio each week."""
+    pool = []
+    for n in names:
+        c = cat.by_pkg.get(n)
+        if c and n not in cat.installed and n not in cat.protected and cat.icon_file(c, 64):
+            pool.append(c)
+        if len(pool) >= WEEK_POOL:
+            break
+    if not pool:
+        pool = [cat.by_pkg[p] for p in FEATURED["essentials"] if p in cat.by_pkg and p not in cat.installed]
+    if not pool:
+        return []
+    week = datetime.date.today().isocalendar()[1]
+    start = (week * 3) % len(pool)
+    return [(pool + pool)[start + i] for i in range(min(3, len(pool)))]
 
 
 class Store(Gtk.Window):
     def __init__(self):
-        super().__init__(title="Store")
+        super().__init__(title="Mango Store")
         self.set_default_size(1080, 720)
         self.set_icon_name("mangos-store")
         self.set_position(Gtk.WindowPosition.CENTER)
@@ -192,6 +381,16 @@ class Store(Gtk.Window):
         side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         side.set_size_request(220, -1); side.get_style_context().add_class("store-sidebar")
         root.pack_start(side, False, False, 0)
+        brand = Gtk.Box(spacing=8, margin_start=16, margin_top=16, margin_bottom=2)
+        try:
+            logo = Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                "/usr/share/mangos/logo/mangos-logo.svg", 30, 30, True))
+        except GLib.Error:
+            logo = Gtk.Image.new_from_icon_name("mangos-logo", Gtk.IconSize.LARGE_TOOLBAR)
+        brand.pack_start(logo, False, False, 0)
+        bl = Gtk.Label(label="Mango Store", xalign=0); bl.get_style_context().add_class("store-brand")
+        brand.pack_start(bl, False, False, 0)
+        side.pack_start(brand, False, False, 0)
         self.search = Gtk.SearchEntry(placeholder_text=tr("Search", "Cerca"), margin=12, margin_bottom=4)
         self.search.connect("search-changed", self.on_search)
         side.pack_start(self.search, False, False, 0)
@@ -243,18 +442,21 @@ class Store(Gtk.Window):
         b.connect("clicked", lambda *_: self.run_helper(["refresh"], self.after_refresh))
         box.pack_start(b, False, False, 0)
 
-    def grid(self, apps):
+    def grid(self, apps, ranked=False):
         flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
                            min_children_per_line=1, max_children_per_line=3,
                            column_spacing=26, row_spacing=0)
-        for c in apps:
-            flow.add(self.app_row(c))
+        for i, c in enumerate(apps):
+            flow.add(self.app_row(c, i + 1 if ranked else None))
         return flow
 
-    def app_row(self, c):
+    def app_row(self, c, rank=None):
         ev = Gtk.EventBox(); row = Gtk.Box(spacing=12); row.get_style_context().add_class("store-row")
         ev.add(row); ev.set_size_request(250, -1)
-        row.pack_start(app_icon(c, 56), False, False, 0)
+        row.pack_start(app_icon(c, 60), False, False, 0)
+        if rank:
+            rl = Gtk.Label(label=str(rank)); rl.get_style_context().add_class("store-rank")
+            row.pack_start(rl, False, False, 0)
         txt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
         n = Gtk.Label(label=c.get_name(), xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=22)
         n.get_style_context().add_class("store-name")
@@ -266,19 +468,18 @@ class Store(Gtk.Window):
         ev.connect("button-press-event", lambda *_: self.show_app(c))
         return ev
 
-    def get_button(self, c, primary=False):
-        b = Gtk.Button(valign=Gtk.Align.CENTER); b.get_style_context().add_class("store-get")
-        if primary:
-            b.get_style_context().add_class("primary")
-        b.app = c
+    def get_button(self, c, primary=False, style=None):
+        b = GetButton(c, "primary" if primary else style)
         b.connect("clicked", self.on_get)
         self.buttons.setdefault(c.get_pkgname(), []).append(b)
         self.update_button(b)
         return b
 
     def update_button(self, b):
+        if b.frac is not None and self.busy:
+            return
         inst = b.app.get_pkgname() in self.cat.installed
-        b.set_label(tr("Open", "Apri") if inst else tr("Get", "Ottieni"))
+        b.set_text(tr("Open", "Apri") if inst else tr("Get", "Ottieni"))
         b.set_sensitive(not self.busy or inst)
 
     def refresh_buttons(self):
@@ -309,31 +510,150 @@ class Store(Gtk.Window):
         box = self.column()
         self.header(box, tr("Discover", "Scopri"),
                     GLib.DateTime.new_now_local().format("%A %e %B").strip().upper())
-        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8); hero.get_style_context().add_class("store-hero")
-        hb = Gtk.Box(spacing=18); hero.pack_start(hb, True, True, 0)
-        img = Gtk.Image.new_from_icon_name("mangos-store", Gtk.IconSize.DIALOG); img.set_pixel_size(96)
-        hb.pack_start(img, False, False, 0)
-        ht = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
-        a = Gtk.Label(label=tr("ArtCraft: the creative apps", "ArtCraft: le app creative"), xalign=0)
-        a.get_style_context().add_class("store-hero-title")
-        b = Gtk.Label(xalign=0, wrap=True, label=tr(
-            "WordCraft, PdfCraft and PhotoCraft are already on your Mac. Get the rest of the suite from the ArtCraft launcher.",
-            "WordCraft, PdfCraft e PhotoCraft sono già sul tuo Mac. Il resto della suite è nel launcher ArtCraft."))
-        b.get_style_context().add_class("store-hero-text")
-        btn = Gtk.Button(label=tr("Open", "Apri"), halign=Gtk.Align.START)
-        btn.connect("clicked", lambda *_: subprocess.Popen(["mangos-open-artcraft"]))
-        ht.pack_start(a, False, False, 0); ht.pack_start(b, False, False, 0); ht.pack_start(btn, False, False, 6)
-        hb.pack_start(ht, True, True, 0)
-        box.pack_start(hero, False, False, 4)
+        box.pack_start(self.carousel(), False, False, 4)
         if not self.cat.apps:
             self.empty_catalog(box); self.page(box, "discover"); return
+        self.week_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.pack_start(self.week_box, False, False, 0)
         for key, en, it in (("essentials", "Essential apps", "App essenziali"), ("play", "Games to try", "Giochi da provare")):
             apps = [self.cat.by_pkg[p] for p in FEATURED[key] if p in self.cat.by_pkg]
             if not apps:
                 continue
-            t = Gtk.Label(label=tr(en, it), xalign=0, margin_top=12); t.get_style_context().add_class("store-section")
+            t = Gtk.Label(label=tr(en, it), xalign=0, margin_top=14); t.get_style_context().add_class("store-section")
             box.pack_start(t, False, False, 0); box.pack_start(self.grid(apps[:12]), False, False, 0)
         self.page(box, "discover")
+
+        def work():
+            names = popcon_names()
+            GLib.idle_add(self.show_week, weekly_picks(self.cat, names), bool(names))
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- sliding banner: ArtCraft + the apps of the week
+    def carousel(self):
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        overlay = Gtk.Overlay()
+        self.slides = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
+                                transition_duration=450, hhomogeneous=True, vhomogeneous=True)
+        overlay.add(self.slides)
+        for icon, step, align in (("go-previous-symbolic", -1, Gtk.Align.START), ("go-next-symbolic", 1, Gtk.Align.END)):
+            b = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
+            b.get_style_context().add_class("store-arrow")
+            b.set_halign(align); b.set_valign(Gtk.Align.CENTER); b.set_margin_start(8); b.set_margin_end(8)
+            b.connect("clicked", lambda _b, st=step: self.slide(st, user=True))
+            overlay.add_overlay(b)
+        outer.pack_start(overlay, False, False, 0)
+        self.dots = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+        outer.pack_start(self.dots, False, False, 0)
+        self.slide_names = []
+        self.add_slide("artcraft", "hero-artcraft", tr("FROM MANGOS", "DA MANGOS"),
+                       tr("ArtCraft: the creative apps", "ArtCraft: le app creative"),
+                       tr("WordCraft, PdfCraft and PhotoCraft are already on your Mac. Get the rest of the suite from the ArtCraft launcher.",
+                          "WordCraft, PdfCraft e PhotoCraft sono già sul tuo Mac. Il resto della suite è nel launcher ArtCraft."),
+                       Gtk.Image.new_from_icon_name(
+                           next((n for n in ("artcraft-launcher", "artcraft", "mangos-logo")
+                                 if Gtk.IconTheme.get_default().has_icon(n)), "mangos-logo"), Gtk.IconSize.DIALOG),
+                       lambda *_: subprocess.Popen(["mangos-open-artcraft"]))
+        ev = Gtk.EventBox(); ev.add(outer)
+        self.banner = ev
+        if getattr(self, "slide_timer", None):
+            GLib.source_remove(self.slide_timer)
+        self.slide_timer = GLib.timeout_add_seconds(6, self.auto_slide)
+        return ev
+
+    def add_slide(self, name, style, kicker, title, text, image, action, button=None):
+        hero = Gtk.Box(spacing=24); hero.get_style_context().add_class("store-hero"); hero.get_style_context().add_class(style)
+        txt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER, margin_start=26)
+        k = Gtk.Label(label=kicker, xalign=0); k.get_style_context().add_class("store-hero-kicker")
+        t = Gtk.Label(label=title, xalign=0, wrap=True); t.get_style_context().add_class("store-hero-title")
+        d = Gtk.Label(label=text, xalign=0, wrap=True, max_width_chars=60, lines=2,
+                      ellipsize=Pango.EllipsizeMode.END); d.get_style_context().add_class("store-hero-text")
+        for w in (k, t, d):
+            txt.pack_start(w, False, False, 0)
+        if button is None:
+            button = Gtk.Button(label=tr("Open", "Apri").upper(), halign=Gtk.Align.START)
+            button.get_style_context().add_class("hero-open")
+            button.connect("clicked", action)
+        else:
+            button.set_halign(Gtk.Align.START)
+        txt.pack_start(button, False, False, 8)
+        hero.pack_start(txt, True, True, 0)
+        if isinstance(image, Gtk.Image):
+            image.set_pixel_size(120)
+        image.set_margin_end(40)
+        hero.pack_end(image, False, False, 0)
+        if action:
+            ev = Gtk.EventBox(); ev.add(hero)
+        else:
+            ev = hero
+        self.slides.add_named(ev, name); ev.show_all()
+        self.slide_names.append(name)
+        dot = Gtk.Button(); dot.get_style_context().add_class("store-dot")
+        dot.connect("clicked", lambda *_: self.show_slide(name, user=True))
+        self.dots.pack_start(dot, False, False, 0); dot.show()
+        self.mark_dot()
+
+    def mark_dot(self):
+        cur = self.slides.get_visible_child_name()
+        for n, d in zip(self.slide_names, self.dots.get_children()):
+            (d.get_style_context().add_class if n == cur else d.get_style_context().remove_class)("active")
+
+    def show_slide(self, name, user=False):
+        self.slides.set_visible_child_name(name)
+        if user:
+            self.last_user_slide = time.monotonic()
+        self.mark_dot()
+
+    def slide(self, step, user=False):
+        if not self.slide_names:
+            return
+        cur = self.slides.get_visible_child_name()
+        i = self.slide_names.index(cur) if cur in self.slide_names else 0
+        nxt = self.slide_names[(i + step) % len(self.slide_names)]
+        self.slides.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT if step > 0
+                                        else Gtk.StackTransitionType.SLIDE_RIGHT)
+        self.show_slide(nxt, user)
+
+    def auto_slide(self):
+        if self.slides.get_toplevel() is not self or not self.slides.get_mapped():
+            return self.slides.get_toplevel() is self
+        if not self.pointer_on_banner() and time.monotonic() - getattr(self, "last_user_slide", 0) > 10:
+            self.slide(1)
+        return True
+
+    def pointer_on_banner(self):
+        """Pause while the pointer rests on the banner (checked, not tracked:
+        crossing events are unreliable when the window maps under it)."""
+        win = self.banner.get_window()
+        if win is None:
+            return False
+        _s, px, py = Gdk.Display.get_default().get_default_seat().get_pointer().get_position()
+        _ok, ox, oy = win.get_origin()
+        a = self.banner.get_allocation()
+        if self.banner.get_has_window():
+            a.x = a.y = 0
+        return ox + a.x <= px < ox + a.x + a.width and oy + a.y <= py < oy + a.y + a.height
+
+    def show_week(self, picks, from_popcon):
+        if not picks or not getattr(self, "week_box", None) or self.week_box.get_toplevel() is not self:
+            return False
+        for i, c in enumerate(picks):
+            self.add_slide(f"week{i}", f"hero-week{i + 1}",
+                           tr("APP OF THE WEEK", "APP DELLA SETTIMANA") + f"  ·  {i + 1}/3",
+                           c.get_name(), c.get_summary() or "", Tile(c, 120, light=True),
+                           lambda *_a, app=c: self.show_app(app),
+                           button=self.get_button(c, style="light"))
+        t = Gtk.Label(label=tr("Apps of the week", "App della settimana"), xalign=0, margin_top=14)
+        t.get_style_context().add_class("store-section")
+        sub = Gtk.Label(xalign=0, label=tr(
+            "Among the most used by Debian users (Debian Popularity Contest), and not on your Mac yet.",
+            "Tra le più usate dagli utenti Debian (Debian Popularity Contest) e non ancora sul tuo Mac.")
+            if from_popcon else tr("Suggested apps (popularity data not reachable right now).",
+                                   "App suggerite (dati di popolarità non raggiungibili ora)."))
+        sub.get_style_context().add_class("store-dim")
+        self.week_box.pack_start(t, False, False, 0); self.week_box.pack_start(sub, False, False, 0)
+        self.week_box.pack_start(self.grid(picks, ranked=True), False, False, 0)
+        self.week_box.show_all()
+        return False
 
     def on_search(self, entry):
         text = entry.get_text().strip()
@@ -377,11 +697,12 @@ class Store(Gtk.Window):
         info.pack_start(acts, False, False, 0)
         top.pack_start(info, True, True, 0)
 
-        facts = Gtk.Box(spacing=36, margin_top=8)
+        facts = Gtk.Box(spacing=0, margin_top=8)
         for k, v in self.package_facts(pkg, c):
-            fb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            a = Gtk.Label(label=k.upper(), xalign=0); a.get_style_context().add_class("store-info-key")
-            b = Gtk.Label(label=v, xalign=0); b.get_style_context().add_class("store-info-val")
+            fb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            fb.get_style_context().add_class("store-fact")
+            a = Gtk.Label(label=k.upper()); a.get_style_context().add_class("store-info-key")
+            b = Gtk.Label(label=v); b.get_style_context().add_class("store-info-val")
             fb.pack_start(a, False, False, 0); fb.pack_start(b, False, False, 0)
             facts.pack_start(fb, False, False, 0)
         box.pack_start(facts, False, False, 0)
@@ -553,7 +874,7 @@ class Store(Gtk.Window):
         self.busy = True; self.refresh_buttons()
         self.progress.set_fraction(0); self.progress.show()
         if button:
-            button.set_label("…")
+            button.set_progress(0.0)
         proc = Gio.Subprocess.new(["pkexec", HELPER] + args,
                                   Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
         stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
@@ -569,13 +890,15 @@ class Store(Gtk.Window):
                 frac = float(m.group(2)) / 100
                 self.progress.set_fraction(frac)
                 if button:
-                    button.set_label("%d%%" % (frac * 100))
+                    button.set_progress(max(0.02, frac))
             src.read_line_async(GLib.PRIORITY_DEFAULT, None, read_line)
 
         def finished(p, res):
             p.wait_finish(res)
             ok = p.get_successful()
             self.busy = False; self.progress.hide()
+            if button:
+                button.frac = None
             if not ok and p.get_exit_status() != 126:   # 126: password dialog dismissed
                 d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
                                       buttons=Gtk.ButtonsType.CLOSE,

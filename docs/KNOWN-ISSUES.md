@@ -127,12 +127,19 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   icons (about 25 MB) are downloaded with the package lists: on a fresh
   installation the Store offers a "Download the catalog" button the first
   time, afterwards Debian's daily update keeps it fresh.
-- There is no popularity data offline: each section starts with a curated
-  list of well-known apps, then the rest alphabetically.
+- **Apps of the week** (sliding banner and list on Discover) come from the
+  Debian Popularity Contest (popcon.debian.org): the most used desktop apps
+  among Debian users that are not installed yet, three new ones each ISO
+  week. Debian publishes no weekly download counts, so this is "most used",
+  not "most downloaded this week". The list is downloaded once a week
+  (about 1 MB, first part of the popcon table); without internet the Store
+  shows curated suggestions instead.
+- Each section starts with a curated list of well-known apps, then the rest
+  alphabetically.
 - Installing needs the administrator password (as on a Mac). Apps that are
   part of MangOS cannot be removed from the Store.
-- "App Store" is an Apple trademark, so the MangOS one is simply called
-  **Store**, with its own icon.
+- "App Store" is an Apple trademark, so the MangOS one is called
+  **Mango Store**, with its own icon (the MangOS mango on a teal tile).
 
 ## Installer
 

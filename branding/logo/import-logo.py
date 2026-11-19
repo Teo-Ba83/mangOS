@@ -68,3 +68,25 @@ for name, rgb in (("mono-dark", (0x1D, 0x1D, 0x1F)), ("mono-light", (0xFF, 0xFF,
                   ("symbolic", (0xBE, 0xBE, 0xBE))):
     open(os.path.join(HERE, f"mangos-logo-{name}.svg"), "w").write(svg(mono(rgb)))
 print("logo files written")
+
+# Mango Store app icon: the mango on a rounded teal square.
+from PIL import ImageDraw
+S = 1024
+bg = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+grad = Image.new("RGBA", (S, S))
+top, bottom = (0x2E, 0xD3, 0xB7), (0x0B, 0x72, 0x86)
+gd = ImageDraw.Draw(grad)
+for yy in range(S):
+    t = yy / (S - 1)
+    gd.line([(0, yy), (S, yy)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)) + (255,))
+mask = Image.new("L", (S, S), 0)
+ImageDraw.Draw(mask).rounded_rectangle([48, 48, S - 48, S - 48], radius=210, fill=255)
+bg.paste(grad, (0, 0), mask)
+fruit = square(mango, 700, margin=0.02)
+shadow = Image.new("RGBA", fruit.size, (0, 0, 0, 0))
+shadow.putalpha(fruit.getchannel("A").point(lambda v: v * 0.35))
+from PIL import ImageFilter as _F
+bg.alpha_composite(shadow.filter(_F.GaussianBlur(18)), ((S - 700) // 2 + 6, (S - 700) // 2 + 22))
+bg.alpha_composite(fruit, ((S - 700) // 2, (S - 700) // 2))
+open(os.path.join(HERE, "mangos-store.svg"), "w").write(svg(bg.resize((512, 512), Image.LANCZOS), "Mango Store"))
+print("store icon written")

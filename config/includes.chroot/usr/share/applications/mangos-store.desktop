@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Store
+Name=Mango Store
 Comment=Find and install apps
 Comment[it]=Trova e installa app
 Exec=mangos-store
