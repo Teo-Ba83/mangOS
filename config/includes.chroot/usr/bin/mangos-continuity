@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+"""MangOS Continuity: AirDrop-like file sharing and phone integration.
+
+usage: mangos-continuity airdrop   LocalSend: send files to iPhone, Android,
+                                   Mac, Windows and Linux on the same Wi-Fi
+       mangos-continuity phone     KDE Connect: phone notifications, shared
+                                   clipboard, files, media remote
+Opens the app, or offers to install it first (administrator password)."""
+import os, shutil, subprocess, sys
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk
+from mangos import tr, load_css
+
+APPS = {
+    "airdrop": {
+        "exe": ["localsend_app", "localsend"],
+        "title": ("AirDrop (LocalSend)", "AirDrop (LocalSend)"),
+        "text": ("LocalSend sends files and photos to nearby devices on the same Wi-Fi: iPhone, Android, "
+                 "Mac, Windows and Linux. Install the free LocalSend app on the other device too "
+                 "(App Store, Google Play or localsend.org).",
+                 "LocalSend invia file e foto ai dispositivi vicini sulla stessa rete Wi-Fi: iPhone, Android, "
+                 "Mac, Windows e Linux. Installa l'app gratuita LocalSend anche sull'altro dispositivo "
+                 "(App Store, Google Play o localsend.org)."),
+        "install": ["install-localsend"],
+        "size": "≈ 30 MB",
+        "icon": "folder-publicshare",
+    },
+    "phone": {
+        "exe": ["kdeconnect-app"],
+        "title": ("iPhone & Android (KDE Connect)", "iPhone e Android (KDE Connect)"),
+        "text": ("KDE Connect links your phone to the Mac: phone notifications on the screen, shared "
+                 "clipboard, send files, control music. Install KDE Connect on the phone too (Google Play, "
+                 "F-Droid or the App Store; the iPhone app has fewer features).",
+                 "KDE Connect collega il telefono al Mac: notifiche del telefono sullo schermo, appunti "
+                 "condivisi, invio di file, controllo della musica. Installa KDE Connect anche sul telefono "
+                 "(Google Play, F-Droid o App Store; su iPhone ha meno funzioni)."),
+        "install": ["install", "kdeconnect"],
+        "size": "≈ 150 MB",
+        "icon": "phone",
+    },
+}
+
+
+def find_exe(app):
+    return next((shutil.which(e) for e in app["exe"] if shutil.which(e)), None)
+
+
+def main():
+    kind = sys.argv[1] if len(sys.argv) > 1 else ""
+    app = APPS.get(kind)
+    if not app:
+        print(__doc__); sys.exit(2)
+    exe = find_exe(app)
+    if exe:
+        os.execv(exe, [exe])
+    load_css()
+    d = Gtk.MessageDialog(message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE,
+                          text=tr(*app["title"]))
+    d.set_icon_name(app["icon"])
+    d.format_secondary_text(tr(*app["text"]) + "\n\n" +
+                            tr(f"It is not installed yet ({app['size']}, needs internet). Install it now?",
+                               f"Non è ancora installata ({app['size']}, serve internet). Installarla ora?"))
+    d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, tr("Install", "Installa"), Gtk.ResponseType.OK)
+    d.set_default_response(Gtk.ResponseType.OK)
+    if d.run() != Gtk.ResponseType.OK:
+        return
+    d.destroy()
+    w = Gtk.Window(title=tr(*app["title"]))
+    w.set_default_size(420, -1); w.set_position(Gtk.WindowPosition.CENTER)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=18)
+    w.add(box)
+    lab = Gtk.Label(label=tr("Installing…", "Installazione…"), xalign=0)
+    bar = Gtk.ProgressBar(); bar.pulse()
+    box.pack_start(lab, False, False, 0); box.pack_start(bar, False, False, 0)
+    w.connect("destroy", Gtk.main_quit)
+    w.show_all()
+    pulse = GLib.timeout_add(150, lambda: (bar.pulse(), True)[1])
+    proc = subprocess.Popen(["pkexec", "/usr/lib/mangos/store-helper"] + app["install"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    def done(pid, status):
+        GLib.source_remove(pulse)
+        out = proc.stdout.read() if proc.stdout else ""
+        if find_exe(app):
+            w.destroy()
+            subprocess.Popen([find_exe(app)])
+        else:
+            bar.set_fraction(0)
+            lab.set_text(tr("Installation failed or was cancelled.", "Installazione non riuscita o annullata.") +
+                         ("\n" + out.strip().splitlines()[-1] if out.strip() else ""))
+            b = Gtk.Button(label=tr("Close", "Chiudi")); b.connect("clicked", lambda *_: w.destroy())
+            box.pack_start(b, False, False, 0); b.show()
+    GLib.child_watch_add(GLib.PRIORITY_DEFAULT, proc.pid, done)
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

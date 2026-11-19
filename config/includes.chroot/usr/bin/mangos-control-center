@@ -1,0 +1,398 @@
+#!/usr/bin/python3
+"""MangOS Control Center: quick toggles and sliders, like the Mac's.
+
+usage: mangos-control-center          show the panel (again: hide it)
+       mangos-control-center --tray   icon in the top bar (started at login)
+
+Wi-Fi, Bluetooth, AirDrop (LocalSend), Do Not Disturb, Dark Mode,
+Night Shift, display brightness and sound volume, plus shortcuts to
+Screenshot, Mission Control and System Settings."""
+import os, re, shutil, subprocess, sys, threading, warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)   # Gtk.StatusIcon
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos")
+ENV = dict(os.environ, LC_ALL="C", LANG="C")
+W = 330
+
+CSS = b"""
+.cc-window { background: transparent; }
+.cc-box { border-radius: 16px; background: alpha(@theme_bg_color, .97); border: 1px solid alpha(currentColor, .14);
+          box-shadow: 0 8px 30px alpha(black, .35); padding: 12px; }
+.cc-tile { border-radius: 12px; background: alpha(currentColor, .07); padding: 9px; }
+.cc-round { border-radius: 99px; min-width: 30px; min-height: 30px; padding: 0;
+            background: alpha(currentColor, .14); border: none; box-shadow: none; }
+.cc-round.on { background: #0A84FF; color: white; }
+.cc-title { font-weight: 600; font-size: 12px; }
+.cc-sub { font-size: 11px; opacity: .6; }
+.cc-head { font-weight: 600; font-size: 12px; margin-bottom: 2px; }
+.cc-small { border-radius: 10px; padding: 6px; }
+scale.cc-scale trough { min-height: 22px; border-radius: 11px; }
+scale.cc-scale highlight { border-radius: 11px; background: #FFFFFF; }
+scale.cc-scale slider { min-width: 22px; min-height: 22px; margin: 0; border-radius: 11px; }
+"""
+
+
+def run(*args, timeout=6):
+    try:
+        p = subprocess.run(list(args), capture_output=True, text=True, env=ENV, timeout=timeout)
+        return p.returncode, p.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+
+
+def bg(fn, *a):
+    threading.Thread(target=fn, args=a, daemon=True).start()
+
+
+# ------------------------------------------------------------- state ----
+def wifi_state():
+    _, radio = run("nmcli", "radio", "wifi")
+    _, dev = run("nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device")
+    name = ""
+    for line in dev.splitlines():
+        p = line.split(":", 2)
+        if len(p) == 3 and p[0] == "wifi" and p[1] == "connected":
+            name = p[2].replace("\\:", ":")
+    return radio.strip() == "enabled", name
+
+
+def bt_state():
+    if not shutil.which("bluetoothctl"):
+        return None
+    rc, out = run("bluetoothctl", "show", timeout=3)
+    if rc != 0 or "Controller" not in out:
+        return None
+    return "Powered: yes" in out
+
+
+def dnd_state():
+    _, out = run("xfconf-query", "-c", "xfce4-notifyd", "-p", "/do-not-disturb")
+    return out.strip() == "true"
+
+
+def dark_state():
+    try:
+        return open(os.path.join(CFG, "appearance")).read().strip() == "dark"
+    except OSError:
+        return False
+
+
+def night_state():
+    _, out = run("mangos-nightshift", "status")
+    return out.strip() == "on"
+
+
+def brightness():
+    rc, out = run("brightnessctl", "-m", "-c", "backlight")
+    if rc != 0 or not out:
+        return None
+    m = re.search(r",(\d+)%,", out)
+    return int(m.group(1)) if m else None
+
+
+def volume():
+    rc, out = run("wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@")
+    m = re.search(r"Volume:\s*([\d.]+)", out)
+    if rc != 0 or not m:
+        return None, False
+    return min(100, round(float(m.group(1)) * 100)), "MUTED" in out
+
+
+# ---------------------------------------------------------------- UI ----
+class Panel(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=tr("Control Center", "Centro di controllo"))
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_resizable(False)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.get_style_context().add_class("cc-window")
+        screen = self.get_screen()
+        if screen.get_rgba_visual() and screen.is_composited():
+            self.set_visual(screen.get_rgba_visual()); self.set_app_paintable(True)
+        self.updating = False
+
+        outer = Gtk.Box(margin=10)
+        self.add(outer)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.get_style_context().add_class("cc-box")
+        box.set_size_request(W, -1)
+        outer.pack_start(box, True, True, 0)
+
+        grid = Gtk.Grid(column_spacing=10, row_spacing=10, column_homogeneous=True)
+        box.pack_start(grid, False, False, 0)
+
+        # connectivity tile (left), DND + appearance (right)
+        conn = self.tile_box()
+        self.wifi = self.toggle_row(conn, "network-wireless-symbolic", "Wi-Fi", self.on_wifi,
+                                    lambda *_: self.launch(["mangos-settings", "network"]))
+        self.bt = self.toggle_row(conn, "bluetooth-symbolic", "Bluetooth", self.on_bt,
+                                  lambda *_: self.launch(["blueman-manager"]))
+        self.airdrop = self.toggle_row(conn, "folder-publicshare-symbolic", "AirDrop", self.on_airdrop, None,
+                                       sub=tr("LocalSend", "LocalSend"))
+        grid.attach(conn, 0, 0, 1, 3)
+
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        dnd = self.tile_box()
+        self.dnd = self.toggle_row(dnd, "notifications-disabled-symbolic",
+                                   tr("Do Not Disturb", "Non disturbare"), self.on_dnd, None)
+        right.pack_start(dnd, False, False, 0)
+        look = self.tile_box()
+        self.dark = self.toggle_row(look, "weather-clear-night-symbolic", tr("Dark Mode", "Modalità scura"),
+                                    self.on_dark, None)
+        self.night = self.toggle_row(look, "night-light-symbolic", "Night Shift", self.on_night, None)
+        right.pack_start(look, False, False, 0)
+        grid.attach(right, 1, 0, 1, 3)
+
+        # sliders
+        self.bright_tile, self.bright = self.slider(box, tr("Display", "Monitor"),
+                                                    "display-brightness-symbolic", self.on_bright)
+        self.vol_tile, self.vol = self.slider(box, tr("Sound", "Suono"), "audio-volume-high-symbolic",
+                                              self.on_vol, button_cb=lambda *_: self.launch(["pavucontrol"]))
+
+        # small buttons
+        row = Gtk.Box(spacing=10, homogeneous=True)
+        for icon, label, cmd in (("applets-screenshooter-symbolic", tr("Screenshot", "Istantanea"),
+                                  ["mangos-screenshot", "tool"]),
+                                 ("view-app-grid-symbolic", "Mission Control", ["mangos-mission-control"]),
+                                 ("emblem-system-symbolic", tr("Settings", "Impostazioni"), ["mangos-settings"])):
+            b = Gtk.Button()
+            b.get_style_context().add_class("cc-tile"); b.get_style_context().add_class("cc-small")
+            bb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            bb.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR), False, False, 0)
+            l = Gtk.Label(label=label, ellipsize=Pango.EllipsizeMode.END); l.get_style_context().add_class("cc-sub")
+            bb.pack_start(l, False, False, 0)
+            b.add(bb)
+            b.connect("clicked", lambda _b, c=cmd: self.launch(c))
+            row.pack_start(b, True, True, 0)
+        box.pack_start(row, False, False, 0)
+
+        self.connect("key-press-event", lambda w, e: e.keyval == Gdk.KEY_Escape and self.hide())
+        self.connect("focus-out-event", lambda *_: GLib.timeout_add(150, self.hide_if_unfocused))
+
+    def hide_if_unfocused(self):
+        if not self.is_active():
+            self.hide()
+        return False
+
+    # ---- widgets
+    def tile_box(self):
+        b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        b.get_style_context().add_class("cc-tile")
+        return b
+
+    def toggle_row(self, parent, icon, title, cb, more_cb, sub=""):
+        row = Gtk.Box(spacing=8)
+        btn = Gtk.Button()
+        btn.get_style_context().add_class("cc-round")
+        btn.add(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU))
+        btn.connect("clicked", lambda *_: cb())
+        row.pack_start(btn, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        t = Gtk.Label(label=title, xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=16)
+        t.get_style_context().add_class("cc-title")
+        s = Gtk.Label(label=sub, xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=16)
+        s.get_style_context().add_class("cc-sub")
+        tb.pack_start(t, False, False, 0); tb.pack_start(s, False, False, 0)
+        if more_cb:
+            ev = Gtk.EventBox(); ev.add(tb)
+            ev.connect("button-release-event", more_cb)
+            row.pack_start(ev, True, True, 0)
+        else:
+            row.pack_start(tb, True, True, 0)
+        parent.pack_start(row, False, False, 0)
+        return {"button": btn, "sub": s, "row": row}
+
+    def set_toggle(self, t, on, sub=None, sensitive=True):
+        ctx = t["button"].get_style_context()
+        (ctx.add_class if on else ctx.remove_class)("on")
+        if sub is not None:
+            t["sub"].set_text(sub)
+        t["row"].set_sensitive(sensitive)
+
+    def slider(self, parent, title, icon, cb, button_cb=None):
+        tile = self.tile_box()
+        tile.set_spacing(4)
+        h = Gtk.Label(label=title, xalign=0); h.get_style_context().add_class("cc-head")
+        tile.pack_start(h, False, False, 0)
+        r = Gtk.Box(spacing=6)
+        r.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
+        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        sc.set_draw_value(False)
+        sc.get_style_context().add_class("cc-scale")
+        sc.connect("value-changed", lambda s: None if self.updating else cb(int(s.get_value())))
+        r.pack_start(sc, True, True, 0)
+        if button_cb:
+            b = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.MENU)
+            b.set_relief(Gtk.ReliefStyle.NONE)
+            b.connect("clicked", button_cb)
+            r.pack_start(b, False, False, 0)
+        tile.pack_start(r, False, False, 0)
+        parent.pack_start(tile, False, False, 0)
+        return tile, sc
+
+    # ---- state
+    def refresh(self):
+        def work():
+            st = {"wifi": wifi_state(), "bt": bt_state(), "dnd": dnd_state(), "dark": dark_state(),
+                  "night": night_state(), "bright": brightness(), "vol": volume(),
+                  "airdrop": bool(shutil.which("localsend_app") or shutil.which("localsend"))}
+            GLib.idle_add(self.show_state, st)
+        bg(work)
+
+    def show_state(self, st):
+        self.updating = True
+        on, name = st["wifi"]
+        self.set_toggle(self.wifi, on, name or (tr("On", "Attivo") if on else tr("Off", "Spento")))
+        bt = st["bt"]
+        self.set_toggle(self.bt, bool(bt), tr("Not available", "Non disponibile") if bt is None else
+                        (tr("On", "Attivo") if bt else tr("Off", "Spento")), sensitive=bt is not None)
+        self.set_toggle(self.airdrop, False, "LocalSend" if st["airdrop"] else
+                        tr("Not installed", "Non installato"), sensitive=True)
+        self.set_toggle(self.dnd, st["dnd"], tr("On", "Attivo") if st["dnd"] else "")
+        self.set_toggle(self.dark, st["dark"], "")
+        self.set_toggle(self.night, st["night"], tr("Until sunrise", "Fino all'alba") if st["night"] else
+                        tr("Sunset to sunrise", "Dal tramonto all'alba"))
+        if st["bright"] is None:
+            self.bright_tile.hide()
+        else:
+            self.bright_tile.show(); self.bright.set_value(st["bright"])
+        v, muted = st["vol"]
+        if v is None:
+            self.vol_tile.hide()
+        else:
+            self.vol_tile.show(); self.vol.set_value(0 if muted else v)
+        self.updating = False
+        return False
+
+    # ---- actions
+    def launch(self, cmd):
+        self.hide()
+        try:
+            subprocess.Popen(cmd)
+        except OSError:
+            pass
+
+    def after(self, *cmds):
+        def work():
+            for c in cmds:
+                run(*c, timeout=20)
+            GLib.idle_add(self.refresh)
+        bg(work)
+
+    def on_wifi(self):
+        on, _ = wifi_state()
+        self.after(["nmcli", "radio", "wifi", "off" if on else "on"])
+
+    def on_bt(self):
+        st = bt_state()
+        if st is not None:
+            self.after(["bluetoothctl", "power", "off" if st else "on"])
+
+    def on_airdrop(self):
+        exe = shutil.which("localsend_app") or shutil.which("localsend")
+        self.launch([exe] if exe else ["mangos-continuity", "airdrop"])
+
+    def on_dnd(self):
+        self.after(["xfconf-query", "-c", "xfce4-notifyd", "-p", "/do-not-disturb", "-n", "-t", "bool",
+                    "-s", "false" if dnd_state() else "true"])
+
+    def on_dark(self):
+        self.after(["mangos-appearance", "light" if dark_state() else "dark"])
+        GLib.timeout_add(1500, lambda: (update_tray_icon(), False)[1])
+
+    def on_night(self):
+        self.after(["mangos-nightshift", "toggle"])
+
+    def on_bright(self, v):
+        bg(run, "brightnessctl", "-q", "-c", "backlight", "set", f"{max(v, 3)}%")
+
+    def on_vol(self, v):
+        bg(lambda: (run("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"),
+                    run("wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{v / 100:.2f}")))
+
+    def popup(self, area=None):
+        self.refresh()
+        self.show_all()
+        disp = Gdk.Display.get_default()
+        mon = disp.get_primary_monitor() or disp.get_monitor(0)
+        geo = mon.get_geometry(); work = mon.get_workarea()
+        w = max(W + 20, self.get_preferred_size()[1].width)
+        if area is not None:
+            x = min(area.x + area.width // 2 - w // 2, geo.x + geo.width - w - 4)
+        else:
+            x = geo.x + geo.width - w - 4
+        self.move(max(geo.x + 4, x), work.y + 2)
+        self.present_with_time(Gtk.get_current_event_time())
+
+        def fit():   # real width is known only once shown
+            ww = self.get_allocated_width()
+            if ww > 1:
+                cx = x if area is not None else geo.x + geo.width - ww - 4
+                self.move(max(geo.x + 4, min(cx, geo.x + geo.width - ww - 4)), work.y + 2)
+            return False
+        GLib.timeout_add(60, fit)
+
+
+# -------------------------------------------------------------- tray ----
+tray = None
+
+
+def update_tray_icon():
+    if tray is not None:
+        tray.set_from_icon_name("mangos-control-center-dark" if dark_state() else "mangos-control-center-light")
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.mangos.ControlCenter",
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.panel = None
+
+    def ensure(self):
+        if self.panel is None:
+            load_css()
+            p = Gtk.CssProvider(); p.load_from_data(CSS)
+            Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p,
+                                                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            self.panel = Panel()
+            self.panel.set_application(self)
+            self.hold()
+
+    def toggle(self, area=None):
+        self.ensure()
+        if self.panel.get_visible():
+            self.panel.hide()
+        else:
+            self.panel.popup(area)
+
+    def do_command_line(self, cl):
+        global tray
+        args = cl.get_arguments()[1:]
+        self.ensure()
+        if "--tray" in args:
+            if tray is None:
+                tray = Gtk.StatusIcon()
+                tray.set_tooltip_text(tr("Control Center", "Centro di controllo"))
+                update_tray_icon()
+
+                def clicked(icon, *_):
+                    ok, _s, area, _o = icon.get_geometry()
+                    self.toggle(area if ok else None)
+                tray.connect("activate", clicked)
+                tray.connect("popup-menu", lambda icon, *_: clicked(icon))
+                GLib.timeout_add_seconds(5, lambda: (update_tray_icon(), True)[1])
+        else:
+            self.toggle()
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

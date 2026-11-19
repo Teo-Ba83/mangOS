@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Extra Mac-style shortcuts, merged into the packaged defaults. keyd turns
-     Cmd into Ctrl for apps and sends Super+Space for Cmd+Space. -->
+     Cmd into Ctrl for apps and sends Super+Space for Cmd+Space (Spotlight). -->
 <channel name="xfce4-keyboard-shortcuts" version="1.0">
   <property name="commands" type="empty">
     <property name="custom" type="empty">
-      <property name="&lt;Super&gt;space" type="string" value="mangos-launchpad"/>
+      <property name="&lt;Super&gt;space" type="string" value="mangos-spotlight"/>
+      <property name="F3" type="string" value="mangos-mission-control"/>
+      <property name="&lt;Primary&gt;Up" type="string" value="mangos-mission-control"/>
       <property name="F4" type="string" value="mangos-launchpad"/>
       <property name="XF86LaunchA" type="string" value="mangos-launchpad"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;Escape" type="string" value="xfce4-taskmanager"/>
-      <property name="&lt;Primary&gt;&lt;Shift&gt;3" type="string" value="xfce4-screenshooter -f -s Pictures"/>
-      <property name="&lt;Primary&gt;&lt;Shift&gt;4" type="string" value="xfce4-screenshooter -r -s Pictures"/>
-      <property name="&lt;Primary&gt;&lt;Shift&gt;5" type="string" value="xfce4-screenshooter"/>
+      <property name="&lt;Primary&gt;&lt;Shift&gt;3" type="string" value="mangos-screenshot full"/>
+      <property name="&lt;Primary&gt;&lt;Shift&gt;4" type="string" value="mangos-screenshot area"/>
+      <property name="&lt;Primary&gt;&lt;Shift&gt;5" type="string" value="mangos-screenshot tool"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;t" type="string" value="xfce4-terminal"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;l" type="string" value="xflock4"/>
       <property name="XF86MonBrightnessUp" type="string" value="brightnessctl -q set +10%"/>

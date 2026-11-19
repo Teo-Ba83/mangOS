@@ -81,6 +81,15 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   shows "Finder".
 - The **global menu** shows menus for GTK apps (Thunar, Terminal, settings);
   Firefox, VLC and the ArtCraft apps keep their menus inside the window.
+- **Mac-style extras.** Cmd+Space opens **Spotlight** (Launchpad: F4 or the
+  dock); **F3** or **Ctrl+Up** open **Mission Control** (F3 no longer means
+  "find next" in Firefox: use Cmd+G); the bottom-left corner opens Mission
+  Control and the bottom-right shows the desktop (Settings > Hot Corners).
+  Mission Control shows minimised windows as their icon.
+- **AirDrop** is LocalSend, which must be installed on the other device too;
+  it does not talk to Apple's AirDrop. **iPhone & Android** uses KDE Connect,
+  installed on request (about 150 MB); its iPhone app has fewer features.
+- **Night Shift** follows sunset and sunrise for the time zone's main city.
 - **Cmd+C in Terminal** sends Ctrl+C (interrupt), as on any Linux; copy with
   Cmd+Shift+C there.
 - **Launchpad** is a full-screen rofi grid: it pages with Page Up/Down or the

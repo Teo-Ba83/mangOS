@@ -1,0 +1,341 @@
+#!/usr/bin/python3
+"""MangOS Spotlight: Cmd+Space search for apps, files, calculations and the web.
+
+A floating search field in the upper middle of the screen, results below as
+you type: calculator result, applications, files in your home folder and
+"Search the web". Enter opens the selected result, arrows move, Esc closes.
+Pressing Cmd+Space again while it is open closes it."""
+import ast, math, operator, os, re, subprocess, threading, time, urllib.parse
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+HOME = os.path.expanduser("~")
+SKIP_DIRS = {"node_modules", "__pycache__", "snap", "go", "target", "build", "venv", ".git"}
+MAX_FILES = 40000
+
+CSS = b"""
+.spot-window { background: transparent; }
+.spot-box { border-radius: 14px; background: @theme_base_color; border: 1px solid alpha(currentColor, .15);
+            box-shadow: 0 10px 40px alpha(black, .35); }
+.spot-entry, .spot-entry:focus { font-size: 22px; border: none; box-shadow: none; background: transparent;
+                                 min-height: 46px; }
+.spot-list { background: transparent; }
+.spot-list row { padding: 4px 10px; border-radius: 8px; margin: 0 6px; }
+.spot-list row:selected { background: #0A84FF; color: white; }
+.spot-head { font-size: 11px; font-weight: 700; opacity: .55; margin: 8px 16px 2px 16px; }
+.spot-sub { font-size: 11px; opacity: .6; }
+.spot-calc { font-size: 26px; font-weight: 600; }
+"""
+
+# ---------------------------------------------------------- calculator ----
+OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+       ast.Pow: operator.pow, ast.Mod: operator.mod, ast.FloorDiv: operator.floordiv,
+       ast.USub: operator.neg, ast.UAdd: operator.pos}
+FUNCS = {"sqrt": math.sqrt, "sin": lambda x: math.sin(math.radians(x)), "cos": lambda x: math.cos(math.radians(x)),
+         "tan": lambda x: math.tan(math.radians(x)), "log": math.log10, "ln": math.log, "abs": abs,
+         "round": round, "pi": math.pi, "e": math.e}
+
+
+def _eval(node):
+    if isinstance(node, ast.Expression):
+        return _eval(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in OPS:
+        a, b = _eval(node.left), _eval(node.right)
+        if isinstance(node.op, ast.Pow) and abs(b) > 1000:
+            raise ValueError
+        return OPS[type(node.op)](a, b)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in OPS:
+        return OPS[type(node.op)](_eval(node.operand))
+    if isinstance(node, ast.Name) and node.id in FUNCS and not callable(FUNCS[node.id]):
+        return FUNCS[node.id]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and callable(FUNCS.get(node.func.id)) \
+            and len(node.args) == 1:
+        return FUNCS[node.func.id](_eval(node.args[0]))
+    raise ValueError
+
+
+def calculate(text):
+    t = text.strip().lower()
+    if not re.fullmatch(r"[\d\s.,+\-*/x×÷^%()a-z]+", t):
+        return None
+    t = t.replace("×", "*").replace("÷", "/").replace("^", "**")
+    t = re.sub(r"(?<=[\d)\s])x(?=[\s\d(])", "*", t)          # 3 x 4
+    if not t or not re.search(r"\d", t) or not re.search(r"[+\-*/%()]|sqrt|sin|cos|tan|log|ln", t):
+        return None
+    # "12,5 + 3" -> 12.5 + 3 (Italian decimal comma); "50% of 80" style: 50%*80
+    t = re.sub(r"(\d),(\d)", r"\1.\2", t)
+    t = re.sub(r"(\d+(?:\.\d+)?)\s*%\s*(?:of|di)\s*", r"\1/100*", t)
+    t = re.sub(r"(\d+(?:\.\d+)?)%", r"(\1/100)", t)
+    try:
+        v = _eval(ast.parse(t, mode="eval"))
+    except Exception:
+        return None
+    if isinstance(v, float):
+        if math.isinf(v) or math.isnan(v):
+            return None
+        v = round(v, 10)
+        if v == int(v) and abs(v) < 1e15:
+            v = int(v)
+    s = f"{v:,}" if isinstance(v, int) else f"{v:,.10g}"
+    if os.environ.get("LANG", "").startswith("it"):
+        s = s.replace(",", "\0").replace(".", ",").replace("\0", ".")
+    return s
+
+
+# ---------------------------------------------------------- file index ----
+class FileIndex:
+    def __init__(self):
+        self.files = []
+        self.ready = False
+        threading.Thread(target=self.build, daemon=True).start()
+
+    def build(self):
+        out = []
+        for root, dirs, files in os.walk(HOME):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS]
+            for n in dirs + files:
+                if not n.startswith("."):
+                    out.append(os.path.join(root, n))
+            if len(out) > MAX_FILES:
+                break
+        self.files = out
+        self.ready = True
+
+    def search(self, q, limit=8):
+        q = q.lower()
+        hits = []
+        for p in self.files:
+            b = os.path.basename(p).lower()
+            if q in b:
+                hits.append((0 if b.startswith(q) else 1, len(b), p))
+        hits.sort()
+        return [h[2] for h in hits[:limit]]
+
+
+# ---------------------------------------------------------------- apps ----
+def all_apps():
+    apps = []
+    for a in Gio.AppInfo.get_all():
+        if not a.should_show():
+            continue
+        kw = ""
+        if isinstance(a, Gio.DesktopAppInfo):
+            kw = " ".join(a.get_keywords() or []) + " " + (a.get_generic_name() or "")
+        apps.append((a, (a.get_display_name() or "").lower(), kw.lower()))
+    return apps
+
+
+def match_apps(apps, q, limit=6):
+    q = q.lower()
+    res = []
+    for a, name, kw in apps:
+        if name.startswith(q):
+            score = 0
+        elif any(w.startswith(q) for w in name.split()):
+            score = 1
+        elif q in name:
+            score = 2
+        elif q in kw:
+            score = 3
+        else:
+            continue
+        res.append((score, name, a))
+    res.sort(key=lambda r: (r[0], r[1]))
+    return [r[2] for r in res[:limit]]
+
+
+class Spotlight(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Spotlight")
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_type_hint(Gdk.WindowTypeHint.DIALOG)
+        self.set_resizable(False)
+        self.get_style_context().add_class("spot-window")
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual and screen.is_composited():
+            self.set_visual(visual)
+            self.set_app_paintable(True)
+        self.apps = all_apps()
+        self.index = FileIndex()
+
+        outer = Gtk.Box(margin=24)
+        self.add(outer)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.get_style_context().add_class("spot-box")
+        outer.pack_start(box, True, True, 0)
+        top = Gtk.Box(spacing=8, margin_start=16, margin_end=16)
+        icon = Gtk.Image.new_from_icon_name("system-search-symbolic", Gtk.IconSize.DND)
+        top.pack_start(icon, False, False, 0)
+        self.entry = Gtk.Entry(placeholder_text=tr("Spotlight Search", "Ricerca Spotlight"))
+        self.entry.get_style_context().add_class("spot-entry")
+        self.entry.connect("changed", lambda *_: self.update())
+        self.entry.connect("activate", lambda *_: self.open_selected())
+        top.pack_start(self.entry, True, True, 0)
+        box.pack_start(top, False, False, 0)
+        self.sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                     max_content_height=440)
+        self.list = Gtk.ListBox()
+        self.list.get_style_context().add_class("spot-list")
+        self.list.connect("row-activated", lambda lb, row: self.open_row(row))
+        self.sw.add(self.list)
+        box.pack_start(self.sw, False, False, 0)
+        self.sw.set_no_show_all(True)
+
+        self.connect("key-press-event", self.on_key)
+        self.connect("focus-out-event", lambda *_: self.close_soon())
+        self.set_size_request(680, -1)
+        self.place()
+
+    def place(self):
+        disp = Gdk.Display.get_default()
+        mon = disp.get_primary_monitor() or disp.get_monitor(0)
+        geo = mon.get_workarea()
+        self.move(geo.x + (geo.width - 680) // 2, geo.y + int(geo.height * 0.18))
+
+    def close_soon(self):
+        GLib.timeout_add(120, lambda: (self.get_application().quit(), False)[1])
+        return False
+
+    def on_key(self, w, ev):
+        k = ev.keyval
+        if k == Gdk.KEY_Escape:
+            self.get_application().quit(); return True
+        if k in (Gdk.KEY_Down, Gdk.KEY_Up):
+            rows = [r for r in self.list.get_children() if r.get_selectable()]
+            if not rows:
+                return True
+            cur = self.list.get_selected_row()
+            i = rows.index(cur) if cur in rows else -1
+            i = min(len(rows) - 1, i + 1) if k == Gdk.KEY_Down else max(0, i - 1)
+            self.list.select_row(rows[i])
+            rows[i].grab_focus(); self.entry.grab_focus_without_selecting()
+            return True
+        return False
+
+    # ---- results
+    def header(self, text):
+        row = Gtk.ListBoxRow(selectable=False, activatable=False)
+        l = Gtk.Label(label=text, xalign=0)
+        l.get_style_context().add_class("spot-head")
+        row.add(l)
+        self.list.add(row)
+
+    def result(self, icon, title, sub, action, gicon=None, big=False):
+        row = Gtk.ListBoxRow()
+        row.action = action
+        b = Gtk.Box(spacing=10)
+        img = Gtk.Image.new_from_gicon(gicon, Gtk.IconSize.DND) if gicon else \
+            Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.DND)
+        img.set_pixel_size(32)
+        b.pack_start(img, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        t = Gtk.Label(label=title, xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
+        if big:
+            t.get_style_context().add_class("spot-calc")
+        tb.pack_start(t, False, False, 0)
+        if sub:
+            s = Gtk.Label(label=sub, xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
+            s.get_style_context().add_class("spot-sub")
+            tb.pack_start(s, False, False, 0)
+        b.pack_start(tb, True, True, 0)
+        row.add(b)
+        self.list.add(row)
+        return row
+
+    def update(self):
+        for c in self.list.get_children():
+            c.destroy()
+        q = self.entry.get_text().strip()
+        if not q:
+            self.sw.hide(); self.resize(680, 1); return
+        first = None
+        calc = calculate(q)
+        if calc is not None:
+            self.header(tr("Calculator", "Calcolatrice"))
+            first = self.result("accessories-calculator", calc, q + " =",
+                                ("copy", calc), big=True)
+        apps = match_apps(self.apps, q)
+        if apps:
+            self.header(tr("Applications", "Applicazioni"))
+            for a in apps:
+                r = self.result(None, a.get_display_name(), a.get_description() or "", ("app", a),
+                                gicon=a.get_icon() or Gio.ThemedIcon.new("application-x-executable"))
+                first = first or r
+        if len(q) >= 2:
+            files = self.index.search(q)
+            if files:
+                self.header(tr("Documents and folders", "Documenti e cartelle"))
+                for p in files:
+                    gicon = None
+                    try:
+                        gicon = Gio.File.new_for_path(p).query_info("standard::icon", 0, None).get_icon()
+                    except GLib.Error:
+                        pass
+                    r = self.result("text-x-generic", os.path.basename(p),
+                                    os.path.dirname(p).replace(HOME, "~", 1), ("file", p), gicon=gicon)
+                    first = first or r
+            elif not self.index.ready:
+                self.header(tr("Indexing your files…", "Indicizzazione dei file…"))
+        self.header(tr("Web", "Web"))
+        r = self.result("web-browser", tr(f"Search the web for “{q}”", f"Cerca sul web “{q}”"), "DuckDuckGo",
+                        ("web", q))
+        first = first or r
+        self.list.show_all()          # the scrolled window has no-show-all set
+        self.sw.show()
+        self.list.select_row(first)
+        self.resize(680, 1)
+
+    def open_selected(self):
+        row = self.list.get_selected_row()
+        if row is not None:
+            self.open_row(row)
+
+    def open_row(self, row):
+        kind, val = row.action
+        try:
+            if kind == "app":
+                val.launch([], Gdk.Display.get_default().get_app_launch_context())
+            elif kind == "file":
+                Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(val).get_uri(), None)
+            elif kind == "web":
+                Gio.AppInfo.launch_default_for_uri(
+                    "https://duckduckgo.com/?q=" + urllib.parse.quote(val), None)
+            elif kind == "copy":
+                cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                cb.set_text(val.replace(".", "").replace(",", ".") if os.environ.get("LANG", "").startswith("it")
+                            else val.replace(",", ""), -1)
+                cb.store()
+        except GLib.Error:
+            pass
+        self.get_application().quit()
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.mangos.Spotlight")
+        self.win = None
+
+    def do_activate(self):
+        if self.win:            # Cmd+Space again: close, like on a Mac
+            self.quit(); return
+        load_css()
+        p = Gtk.CssProvider(); p.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p,
+                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.win = Spotlight(self)
+        self.win.show_all()
+        self.win.present_with_time(Gtk.get_current_event_time() or int(time.time()))
+        self.win.entry.grab_focus()
+
+
+if __name__ == "__main__":
+    App().run(None)

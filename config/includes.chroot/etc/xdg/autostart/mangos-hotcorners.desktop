@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=MangOS Hot Corners
+Exec=mangos-hotcorners
+NoDisplay=true
+OnlyShowIn=XFCE;

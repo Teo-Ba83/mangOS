@@ -80,6 +80,16 @@ for deb in "$CACHE"/artcraft/*.deb; do
   EXPECTED_PKGS="$EXPECTED_PKGS $pkg"
   echo "ArtCraft package: $pkg $ver ($arch)"
 done
+log "Fetching LocalSend (AirDrop-like file sharing)"
+if "$ROOT/scripts/fetch-localsend.sh" "$CACHE/localsend"; then
+  deb="$CACHE/localsend/localsend.deb"
+  pkg=$(dpkg-deb -f "$deb" Package); ver=$(dpkg-deb -f "$deb" Version); arch=$(dpkg-deb -f "$deb" Architecture)
+  cp "$deb" "$WORK/config/packages.chroot/${pkg}_${ver//:/%3a}_${arch}.deb"
+  install -D -m 644 "$CACHE/localsend/localsend.conf" "$OVL/usr/share/mangos/localsend.conf"
+  echo "LocalSend package: $pkg $ver ($arch)"
+else
+  echo "WARNING: LocalSend could not be fetched and verified; the ISO will not include it." >&2
+fi
 # The MangOS system package (look, settings, tools, updater): installed in the
 # image and published for web updates. Version: <MANGOS_VERSION>+<build id>.
 PKG_VERSION="$MANGOS_VERSION+${MANGOS_BUILD_ID:-local$(date -u +%Y%m%d%H%M)}"

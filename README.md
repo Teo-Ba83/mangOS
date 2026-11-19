@@ -12,7 +12,10 @@ ArtCraft creative apps preinstalled.
 | Base | Debian 13 stable, amd64, live-build |
 | Desktop | XFCE 4.20 + Plank dock, WhiteSur theme (light/dark), Inter font |
 | Top bar | MangOS logo menu, global app menu, tray, sound, battery, clock |
-| Launchpad | full-screen app grid with search (rofi): dock icon, Cmd+Space or F4 |
+| Launchpad | full-screen app grid with search (rofi): dock icon or F4 |
+| Spotlight | Cmd+Space: apps, files, calculator, web search |
+| Control Center | top-bar icon: Wi-Fi, Bluetooth, AirDrop (LocalSend), Do Not Disturb, Dark Mode, Night Shift, brightness, volume |
+| Mission Control | F3, Ctrl+Up or a hot corner; Quick Look with Space in the Finder; screenshots on the Desktop (Cmd+Shift+3/4/5) |
 | Keyboard | Command key works like on a Mac (keyd): Cmd+C/V/X/Z/Q/W/Tab/Space |
 | Trackpad | tap to click, natural scrolling, two-finger right click |
 | Wi-Fi | Broadcom BCM4321 (MacBook3,1 and 4,1): `wl` driver prebuilt with DKMS (offline); `b43` + firmware as reserve; *Wi-Fi Check* tool |

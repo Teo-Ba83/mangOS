@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=MangOS Night Shift
+Exec=mangos-nightshift daemon
+NoDisplay=true
+OnlyShowIn=XFCE;

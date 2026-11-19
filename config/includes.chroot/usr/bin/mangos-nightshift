@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+"""MangOS Night Shift: warmer screen colours from sunset to sunrise.
+
+usage: mangos-nightshift on | off | toggle | status | daemon
+The sun times come from the computer's time zone (its coordinates in
+tzdata's zone1970.tab), so no location service is needed. 'daemon' is
+started at login and runs redshift while Night Shift is on."""
+import os, re, signal, subprocess, sys
+
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos")
+STATE = os.path.join(CFG, "nightshift")
+DAY, NIGHT = 6500, 3700
+
+
+def timezone():
+    try:
+        tz = open("/etc/timezone").read().strip()
+        if tz:
+            return tz
+    except OSError:
+        pass
+    try:
+        return os.path.realpath("/etc/localtime").split("zoneinfo/", 1)[1]
+    except (IndexError, OSError):
+        return "Europe/Rome"
+
+
+def coord(s, deg):
+    sign = -1 if s[0] == "-" else 1
+    s = s[1:]
+    d, rest = int(s[:deg]), s[deg:]
+    m = int(rest[:2]); sec = int(rest[2:4]) if len(rest) >= 4 else 0
+    return sign * (d + m / 60 + sec / 3600)
+
+
+def location():
+    tz = timezone()
+    for f in ("/usr/share/zoneinfo/zone1970.tab", "/usr/share/zoneinfo/zone.tab"):
+        try:
+            for line in open(f):
+                p = line.split("\t")
+                if len(p) >= 3 and p[2].strip() == tz:
+                    m = re.match(r"([+-]\d+)([+-]\d+)", p[1])
+                    a, b = m.group(1), m.group(2)
+                    return coord(a, 2), coord(b, 3)
+        except OSError:
+            pass
+    return 41.9, 12.5          # Rome
+
+
+def is_on():
+    try:
+        return open(STATE).read().strip() == "on"
+    except OSError:
+        return False
+
+
+def set_state(on):
+    os.makedirs(CFG, exist_ok=True)
+    with open(STATE, "w") as f:
+        f.write("on\n" if on else "off\n")
+
+
+def stop_redshift():
+    subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "redshift"], stderr=subprocess.DEVNULL)
+    subprocess.run(["redshift", "-x", "-m", "randr"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def start_daemon():
+    subprocess.Popen([sys.argv[0], "daemon"], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def daemon():
+    if not is_on():
+        return
+    lat, lon = location()
+    os.execvp("redshift", ["redshift", "-l", f"{lat:.2f}:{lon:.2f}", "-t", f"{DAY}:{NIGHT}",
+                           "-m", "randr", "-r"])
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if cmd == "status":
+        print("on" if is_on() else "off")
+    elif cmd == "on" or (cmd == "toggle" and not is_on()):
+        set_state(True); stop_redshift(); start_daemon(); print("on")
+    elif cmd in ("off", "toggle"):
+        set_state(False); stop_redshift(); print("off")
+    elif cmd == "daemon":
+        daemon()
+    elif cmd == "location":
+        print("%s %.2f %.2f" % ((timezone(),) + location()))
+    else:
+        print(__doc__); sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

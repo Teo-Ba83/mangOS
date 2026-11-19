@@ -237,3 +237,6 @@ qml6-module-qtquick-layouts
 qml6-module-qtqml-workerscript
 qml6-module-qtquick-templates
 squashfs-tools
+redshift
+gir1.2-wnck-3.0
+poppler-utils

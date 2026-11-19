@@ -28,6 +28,40 @@ add_dock_item() { # name desktop-id
 }
 add_dock_item mangos-store mangos-store
 
+# Mac-style shortcuts added in later MangOS versions (kept if the user chose
+# something else): Cmd+Space Spotlight, F3 / Ctrl+Up Mission Control,
+# Cmd+Shift+3/4/5 screenshots on the Desktop.
+ks() { # property new-value old-value...
+  cur=$(xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$1" 2>/dev/null || true)
+  p=$1; n=$2; shift 2
+  if [ -z "$cur" ]; then
+    xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$p" -n -t string -s "$n"; return 0
+  fi
+  for o in "$@"; do [ "$cur" = "$o" ] && xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$p" -s "$n"; done
+  return 0
+}
+ks '<Super>space' mangos-spotlight mangos-launchpad
+ks F3 mangos-mission-control
+ks '<Primary>Up' mangos-mission-control
+ks '<Primary><Shift>3' 'mangos-screenshot full' 'xfce4-screenshooter -f -s Pictures'
+ks '<Primary><Shift>4' 'mangos-screenshot area' 'xfce4-screenshooter -r -s Pictures'
+ks '<Primary><Shift>5' 'mangos-screenshot tool' 'xfce4-screenshooter'
+
+# Quick Look in the Finder: Space (and right-click > Quick Look).
+QL_ID=1700000000000001-mangos-quicklook
+td=$HOME/.config/Thunar; mkdir -p "$td"
+changed=false
+[ -f "$td/uca.xml" ] || { cp /etc/xdg/Thunar/uca.xml "$td/uca.xml" 2>/dev/null || printf '<?xml version="1.0" encoding="UTF-8"?>\n<actions>\n</actions>\n' > "$td/uca.xml"; }
+if ! grep -q "$QL_ID" "$td/uca.xml"; then
+  sed -i "s|</actions>|<action>\n\t<icon>view-reveal-symbolic</icon>\n\t<name>Quick Look</name>\n\t<name xml:lang=\"it\">Anteprima rapida</name>\n\t<unique-id>$QL_ID</unique-id>\n\t<command>mangos-quicklook %F</command>\n\t<description>Preview without opening (Space)</description>\n\t<description xml:lang=\"it\">Anteprima senza aprire (Spazio)</description>\n\t<patterns>*</patterns>\n\t<startup-notify/>\n\t<directories/>\n\t<audio-files/>\n\t<image-files/>\n\t<other-files/>\n\t<text-files/>\n\t<video-files/>\n</action>\n</actions>|" "$td/uca.xml"
+  changed=true
+fi
+if ! grep -q "uca-action-$QL_ID" "$td/accels.scm" 2>/dev/null; then
+  echo "(gtk_accel_path \"<Actions>/ThunarActions/uca-action-$QL_ID\" \"space\")" >> "$td/accels.scm"
+  changed=true
+fi
+if $changed; then thunar -q 2>/dev/null || true; fi
+
 # The dock's Settings item now opens MangOS System Settings (gear icon).
 di=$HOME/.config/plank/dock1/launchers/xfce-settings-manager.dockitem
 if [ -f "$di" ] && grep -q 'xfce-settings-manager.desktop' "$di"; then

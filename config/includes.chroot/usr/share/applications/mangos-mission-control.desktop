@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Mission Control
+Comment=See all open windows side by side
+Comment[it]=Mostra tutte le finestre aperte affiancate
+Exec=mangos-mission-control
+Icon=preferences-system-windows
+Terminal=false
+Categories=Utility;X-MangOS-Launchpad;
+Keywords=expose;windows;mission;finestre;

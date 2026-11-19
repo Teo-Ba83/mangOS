@@ -1,0 +1,20 @@
+#!/bin/sh
+# MangOS screenshots, like on a Mac: saved on the Desktop with the date.
+#   mangos-screenshot full    Cmd+Shift+3  whole screen
+#   mangos-screenshot area    Cmd+Shift+4  drag to choose an area
+#   mangos-screenshot window  Cmd+Shift+4 then Space on a Mac: the active window
+#   mangos-screenshot tool    Cmd+Shift+5  options (delay, clipboard, ...)
+mode=${1:-full}
+dir=$(xdg-user-dir DESKTOP 2>/dev/null)
+[ -n "$dir" ] && [ -d "$dir" ] || dir=$HOME
+case "${LANGUAGE:-${LC_MESSAGES:-$LANG}}" in
+  it*) name="Istantanea $(date +%Y-%m-%d) alle $(date +%H.%M.%S).png" ;;
+  *)   name="Screenshot $(date +%Y-%m-%d) at $(date +%H.%M.%S).png" ;;
+esac
+case "$mode" in
+  full)   exec xfce4-screenshooter -f -s "$dir/$name" ;;
+  area)   exec xfce4-screenshooter -r -s "$dir/$name" ;;
+  window) exec xfce4-screenshooter -w -s "$dir/$name" ;;
+  tool)   exec xfce4-screenshooter ;;
+  *) sed -n '2,6p' "$0"; exit 2 ;;
+esac

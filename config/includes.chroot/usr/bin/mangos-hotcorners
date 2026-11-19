@@ -1,0 +1,157 @@
+#!/usr/bin/python3
+"""MangOS hot corners: move the pointer into a screen corner to act.
+
+usage: mangos-hotcorners            run (started at login)
+       mangos-hotcorners --settings choose what each corner does
+Settings are in ~/.config/mangos/hotcorners (corner=action lines)."""
+import os, subprocess, sys
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk
+from mangos import tr, load_css
+
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos", "hotcorners")
+CORNERS = [("top-left", "Top left", "In alto a sinistra"), ("top-right", "Top right", "In alto a destra"),
+           ("bottom-left", "Bottom left", "In basso a sinistra"), ("bottom-right", "Bottom right", "In basso a destra")]
+ACTIONS = [
+    ("none", "—", "—", None),
+    ("mission-control", "Mission Control", "Mission Control", ["mangos-mission-control"]),
+    ("launchpad", "Launchpad", "Launchpad", ["mangos-launchpad"]),
+    ("desktop", "Desktop", "Scrivania", ["mangos-hotcorners", "--show-desktop"]),
+    ("control-center", "Control Center", "Centro di controllo", ["mangos-control-center"]),
+    ("spotlight", "Spotlight", "Spotlight", ["mangos-spotlight"]),
+    ("lock", "Lock Screen", "Blocca schermo", ["xflock4"]),
+]
+# The logo menu sits in the top-left corner and the Control Center icon top
+# right, so by default only the bottom corners act.
+DEFAULTS = {"top-left": "none", "top-right": "none", "bottom-left": "mission-control", "bottom-right": "desktop"}
+DWELL_MS, POLL_MS, EDGE = 250, 100, 2
+
+
+def load():
+    conf = dict(DEFAULTS)
+    try:
+        for line in open(CFG):
+            k, _, v = line.strip().partition("=")
+            if k in conf and any(a[0] == v for a in ACTIONS):
+                conf[k] = v
+    except OSError:
+        pass
+    return conf
+
+
+def save(conf):
+    os.makedirs(os.path.dirname(CFG), exist_ok=True)
+    with open(CFG, "w") as f:
+        for k, _, _ in CORNERS:
+            f.write(f"{k}={conf[k]}\n")
+
+
+def fullscreen_active():
+    try:
+        gi.require_version("Wnck", "3.0")
+        from gi.repository import Wnck
+        scr = Wnck.Screen.get_default(); scr.force_update()
+        w = scr.get_active_window()
+        return bool(w and w.is_fullscreen())
+    except Exception:
+        return False
+
+
+class Watcher:
+    def __init__(self):
+        self.conf = load()
+        self.mtime = self.cfg_mtime()
+        self.inside = None
+        self.since = 0
+        self.fired = False
+        GLib.timeout_add(POLL_MS, self.tick)
+
+    @staticmethod
+    def cfg_mtime():
+        try:
+            return os.path.getmtime(CFG)
+        except OSError:
+            return 0
+
+    def corner_at(self, x, y):
+        disp = Gdk.Display.get_default()
+        for i in range(disp.get_n_monitors()):
+            g = disp.get_monitor(i).get_geometry()
+            if g.x <= x < g.x + g.width and g.y <= y < g.y + g.height:
+                left, right = x <= g.x + EDGE, x >= g.x + g.width - 1 - EDGE
+                top, bottom = y <= g.y + EDGE, y >= g.y + g.height - 1 - EDGE
+                if top and left: return "top-left"
+                if top and right: return "top-right"
+                if bottom and left: return "bottom-left"
+                if bottom and right: return "bottom-right"
+        return None
+
+    def tick(self):
+        m = self.cfg_mtime()
+        if m != self.mtime:
+            self.mtime, self.conf = m, load()
+        seat = Gdk.Display.get_default().get_default_seat()
+        _, x, y = seat.get_pointer().get_position()
+        c = self.corner_at(x, y)
+        now = GLib.get_monotonic_time() // 1000
+        if c != self.inside:
+            self.inside, self.since, self.fired = c, now, False
+        elif c and not self.fired and now - self.since >= DWELL_MS:
+            self.fired = True
+            act = next((a for a in ACTIONS if a[0] == self.conf.get(c)), None)
+            if act and act[3] and not fullscreen_active():
+                try:
+                    subprocess.Popen(act[3])
+                except OSError:
+                    pass
+        return True
+
+
+def show_desktop():
+    gi.require_version("Wnck", "3.0")
+    from gi.repository import Wnck
+    scr = Wnck.Screen.get_default(); scr.force_update()
+    scr.toggle_showing_desktop(not scr.get_showing_desktop())
+    while Gtk.events_pending():
+        Gtk.main_iteration()
+
+
+def settings():
+    load_css()
+    conf = load()
+    d = Gtk.Dialog(title=tr("Hot Corners", "Angoli attivi"))
+    d.set_icon_name("preferences-desktop")
+    d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
+    g = Gtk.Grid(row_spacing=10, column_spacing=12, margin=18)
+    d.get_content_area().add(g)
+    g.attach(Gtk.Label(label=tr("Move the pointer into a corner of the screen to:",
+                                "Porta il puntatore in un angolo dello schermo per:"), xalign=0), 0, 0, 2, 1)
+    combos = {}
+    for i, (k, en, it) in enumerate(CORNERS, start=1):
+        g.attach(Gtk.Label(label=tr(en, it), xalign=1), 0, i, 1, 1)
+        cb = Gtk.ComboBoxText()
+        for a in ACTIONS:
+            cb.append(a[0], tr(a[1], a[2]))
+        cb.set_active_id(conf[k])
+        g.attach(cb, 1, i, 1, 1)
+        combos[k] = cb
+    d.show_all()
+    if d.run() == Gtk.ResponseType.OK:
+        save({k: cb.get_active_id() or "none" for k, cb in combos.items()})
+    d.destroy()
+
+
+def main():
+    if "--settings" in sys.argv:
+        settings(); return
+    if "--show-desktop" in sys.argv:
+        Gtk.init(None); show_desktop(); return
+    Gtk.init(None)
+    Watcher()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

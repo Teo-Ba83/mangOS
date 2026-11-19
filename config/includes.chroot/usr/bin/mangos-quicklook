@@ -1,0 +1,239 @@
+#!/usr/bin/python3
+"""MangOS Quick Look: preview files without opening them.
+
+usage: mangos-quicklook FILE...
+In the Finder (Thunar) select files and press Space (or right-click >
+Quick Look). Images, text and code, PDF (first page), folders and any
+other file (icon, kind, size, date). Space or Esc closes, Left/Right
+move between the selected files, Enter opens with the default app."""
+import os, shutil, subprocess, sys, tempfile, time
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+TEXT_TYPES = ("application/json", "application/xml", "application/x-shellscript", "application/javascript",
+              "application/x-desktop", "application/x-yaml", "application/toml", "application/sql",
+              "application/x-perl", "application/x-python", "application/x-ruby", "application/x-php")
+MAX_TEXT = 256 * 1024
+
+CSS = b"""
+.ql-info { font-size: 13px; }
+.ql-big { font-size: 18px; font-weight: 700; }
+.ql-dim { opacity: .65; }
+textview.ql-text { font-family: monospace; font-size: 11px; }
+"""
+
+
+def human(n):
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if n < 1000 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1000
+
+
+def dir_summary(path):
+    count = size = 0
+    deadline = time.monotonic() + 1.5
+    for root, dirs, files in os.walk(path):
+        count += len(files) + len(dirs)
+        for f in files:
+            try:
+                size += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+        if time.monotonic() > deadline:
+            return count, size, True
+    return count, size, False
+
+
+class QuickLook(Gtk.Window):
+    def __init__(self, paths):
+        super().__init__(title="Quick Look")
+        self.paths = [p for p in paths if os.path.exists(p)] or paths
+        self.i = 0
+        self.tmp = tempfile.mkdtemp(prefix="mangos-ql-")
+        disp = Gdk.Display.get_default()
+        mon = disp.get_primary_monitor() or disp.get_monitor(0)
+        geo = mon.get_workarea()
+        self.maxw, self.maxh = int(geo.width * 0.7), int(geo.height * 0.75)
+        self.set_default_size(min(820, self.maxw), min(600, self.maxh))
+        self.set_position(Gtk.WindowPosition.CENTER)
+
+        self.hb = Gtk.HeaderBar(show_close_button=True)
+        self.set_titlebar(self.hb)
+        self.open_btn = Gtk.Button()
+        self.open_btn.get_style_context().add_class("suggested-action")
+        self.open_btn.connect("clicked", lambda *_: self.open_default())
+        self.hb.pack_end(self.open_btn)
+        if len(self.paths) > 1:
+            nav = Gtk.Box(); nav.get_style_context().add_class("linked")
+            for icon, step in (("go-previous-symbolic", -1), ("go-next-symbolic", 1)):
+                b = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
+                b.connect("clicked", lambda _b, s=step: self.move_by(s))
+                nav.pack_start(b, False, False, 0)
+            self.hb.pack_start(nav)
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.add(self.body)
+        self.connect("key-press-event", self.on_key)
+        self.connect("destroy", lambda *_: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.show_file()
+
+    def on_key(self, w, ev):
+        k = ev.keyval
+        if k in (Gdk.KEY_space, Gdk.KEY_Escape):
+            self.destroy()
+        elif k == Gdk.KEY_Right:
+            self.move_by(1)
+        elif k == Gdk.KEY_Left:
+            self.move_by(-1)
+        elif k in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self.open_default()
+        else:
+            return False
+        return True
+
+    def move_by(self, step):
+        self.i = (self.i + step) % len(self.paths)
+        self.show_file()
+
+    def path(self):
+        return self.paths[self.i]
+
+    def open_default(self):
+        try:
+            Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(self.path()).get_uri(), None)
+        except GLib.Error:
+            subprocess.Popen(["xdg-open", self.path()])
+        self.destroy()
+
+    # ---- content
+    def show_file(self):
+        for c in self.body.get_children():
+            c.destroy()
+        p = self.path()
+        name = os.path.basename(p.rstrip("/")) or p
+        self.hb.set_title(name)
+        self.hb.set_subtitle(f"{self.i + 1} / {len(self.paths)}" if len(self.paths) > 1 else "")
+        ctype = Gio.content_type_guess(p, None)[0] if not os.path.isdir(p) else "inode/directory"
+        try:
+            info = Gio.File.new_for_path(p).query_info("standard::content-type,standard::icon", 0, None)
+            ctype = info.get_content_type() or ctype
+            gicon = info.get_icon()
+        except GLib.Error:
+            gicon = Gio.content_type_get_icon(ctype)
+        app = Gio.AppInfo.get_default_for_type(ctype, False)
+        self.open_btn.set_label(tr("Open with ", "Apri con ") + app.get_display_name() if app else tr("Open", "Apri"))
+        self.open_btn.set_visible(not os.path.isdir(p) or True)
+
+        w = None
+        try:
+            if ctype.startswith("image/") and ctype != "image/svg+xml-compressed":
+                w = self.image_view(p)
+            elif ctype == "application/pdf" and shutil.which("pdftoppm"):
+                w = self.pdf_view(p)
+            elif ctype.startswith("text/") or ctype in TEXT_TYPES or Gio.content_type_is_a(ctype, "text/plain"):
+                w = self.text_view(p)
+        except Exception:
+            w = None
+        self.body.pack_start(w or self.info_view(p, ctype, gicon), True, True, 0)
+        self.body.show_all()
+
+    def image_view(self, p):
+        anim = GdkPixbuf.PixbufAnimation.new_from_file(p)
+        if not anim.is_static_image():
+            img = Gtk.Image.new_from_animation(anim)
+        else:
+            pb = GdkPixbuf.Pixbuf.new_from_file(p)
+            pb = pb.apply_embedded_orientation() or pb
+            s = min(self.maxw / pb.get_width(), (self.maxh - 60) / pb.get_height(), 1.0)
+            img = Gtk.Image.new_from_pixbuf(pb.scale_simple(max(1, int(pb.get_width() * s)),
+                                                            max(1, int(pb.get_height() * s)),
+                                                            GdkPixbuf.InterpType.BILINEAR))
+            self.resize(max(320, int(pb.get_width() * s)), max(200, int(pb.get_height() * s)))
+        return img
+
+    def pdf_view(self, p):
+        out = os.path.join(self.tmp, f"page{self.i}")
+        subprocess.run(["pdftoppm", "-png", "-r", "90", "-f", "1", "-l", "1", "-singlefile", p, out],
+                       timeout=20, check=True, capture_output=True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        sw = Gtk.ScrolledWindow(vexpand=True)
+        pb = GdkPixbuf.Pixbuf.new_from_file(out + ".png")
+        s = min(self.maxw / pb.get_width(), 1.0)
+        sw.add(Gtk.Image.new_from_pixbuf(pb.scale_simple(int(pb.get_width() * s), int(pb.get_height() * s),
+                                                         GdkPixbuf.InterpType.BILINEAR)))
+        box.pack_start(sw, True, True, 0)
+        pages = ""
+        try:
+            info = subprocess.run(["pdfinfo", p], capture_output=True, text=True, timeout=10).stdout
+            pages = next((l.split(":", 1)[1].strip() for l in info.splitlines() if l.startswith("Pages:")), "")
+        except Exception:
+            pass
+        if pages:
+            l = Gtk.Label(label=tr(f"Page 1 of {pages}", f"Pagina 1 di {pages}"), margin=4)
+            l.get_style_context().add_class("ql-dim")
+            box.pack_start(l, False, False, 0)
+        self.resize(min(int(pb.get_width() * s) + 30, self.maxw), self.maxh)
+        return box
+
+    def text_view(self, p):
+        with open(p, "rb") as f:
+            data = f.read(MAX_TEXT)
+        if b"\0" in data[:4096]:
+            return None
+        text = data.decode("utf-8", errors="replace")
+        sw = Gtk.ScrolledWindow(vexpand=True)
+        tv = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, left_margin=10,
+                          right_margin=10, top_margin=8, bottom_margin=8)
+        tv.get_style_context().add_class("ql-text")
+        tv.get_buffer().set_text(text + ("\n…" if os.path.getsize(p) > MAX_TEXT else ""))
+        sw.add(tv)
+        return sw
+
+    def info_view(self, p, ctype, gicon):
+        box = Gtk.Box(spacing=24, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER, margin=30)
+        img = Gtk.Image.new_from_gicon(gicon, Gtk.IconSize.DIALOG); img.set_pixel_size(128)
+        box.pack_start(img, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
+        t = Gtk.Label(label=os.path.basename(p.rstrip("/")) or p, xalign=0, wrap=True, max_width_chars=40)
+        t.get_style_context().add_class("ql-big")
+        tb.pack_start(t, False, False, 0)
+        lines = [Gio.content_type_get_description(ctype)]
+        try:
+            st = os.stat(p)
+            if os.path.isdir(p):
+                n, size, more = dir_summary(p)
+                lines.append(tr(f"{n}{'+' if more else ''} items, {human(size)}",
+                                f"{n}{'+' if more else ''} elementi, {human(size)}"))
+            else:
+                lines.append(human(st.st_size))
+            lines.append(tr("Modified ", "Modificato ") + time.strftime("%d/%m/%Y %H:%M", time.localtime(st.st_mtime)))
+        except OSError:
+            pass
+        for line in lines:
+            l = Gtk.Label(label=line, xalign=0); l.get_style_context().add_class("ql-dim")
+            tb.pack_start(l, False, False, 0)
+        box.pack_start(tb, False, False, 0)
+        self.resize(560, 300)
+        return box
+
+
+def main():
+    paths = [Gio.File.new_for_commandline_arg(a).get_path() or a for a in sys.argv[1:]]
+    if not paths:
+        print(__doc__); sys.exit(2)
+    load_css()
+    pr = Gtk.CssProvider(); pr.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), pr,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = QuickLook(paths)
+    w.connect("destroy", Gtk.main_quit)
+    w.show_all()
+    w.present()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

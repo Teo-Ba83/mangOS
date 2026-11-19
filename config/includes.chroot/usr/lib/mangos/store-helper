@@ -4,6 +4,9 @@
 #   store-helper install PKG...     install Debian packages
 #   store-helper remove PKG...      remove them (never MangOS itself)
 #   store-helper upgrade            MangOS update + all Debian updates
+#   store-helper install-localsend  LocalSend, the exact file verified when
+#                                   this MangOS build was made (SHA-256 in
+#                                   /usr/share/mangos/localsend.conf)
 # Progress lines for the Store come from apt's Status-Fd (pmstatus/dlstatus).
 set -eu
 export DEBIAN_FRONTEND=noninteractive
@@ -30,5 +33,18 @@ case "$cmd" in
     /usr/lib/mangos/mangos-updater install || true
     apt-get -q -o APT::Status-Fd=1 update
     $APT full-upgrade ;;
-  *) echo "usage: store-helper refresh|install PKG...|remove PKG...|upgrade" >&2; exit 2 ;;
+  install-localsend)
+    conf=/usr/share/mangos/localsend.conf
+    [ -r "$conf" ] || { echo "LocalSend is not available for this MangOS build." >&2; exit 3; }
+    . "$conf"
+    case "$LOCALSEND_URL" in https://github.com/localsend/localsend/releases/download/*) ;; *) exit 3;; esac
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    echo "Downloading LocalSend $LOCALSEND_VERSION"
+    curl -fsSL --retry 3 -o "$tmp/localsend.deb" "$LOCALSEND_URL"
+    got=$(sha256sum "$tmp/localsend.deb" | cut -d' ' -f1)
+    if [ "$got" != "$LOCALSEND_SHA256" ]; then echo "LocalSend checksum mismatch: refused." >&2; exit 4; fi
+    chmod 644 "$tmp/localsend.deb"; chmod 755 "$tmp"
+    apt-get -q update >/dev/null 2>&1 || true
+    $APT install "$tmp/localsend.deb" ;;
+  *) echo "usage: store-helper refresh|install PKG...|remove PKG...|upgrade|install-localsend" >&2; exit 2 ;;
 esac

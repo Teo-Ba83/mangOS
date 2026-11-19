@@ -1,0 +1,185 @@
+#!/usr/bin/python3
+"""MangOS Mission Control: all open windows side by side (like Exposé).
+
+Click a window to bring it to the front; Esc, F3 or a click on the
+background closes. Arrow keys move the selection, Enter opens it.
+Opened with F3 or Ctrl+Up (as on a Mac), a hot corner or the Control
+Center."""
+import math, time
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkX11", "3.0")
+gi.require_version("Wnck", "3.0")
+from gi.repository import Gdk, GdkPixbuf, GdkX11, GLib, Gtk, Pango, Wnck
+from mangos import tr, load_css
+
+CSS = b"""
+.mc-window { background: rgba(20, 20, 24, 0.82); }
+.mc-window.solid { background: #1c1c20; }
+.mc-thumb { border-radius: 8px; padding: 4px; border: 3px solid transparent; }
+.mc-thumb.selected { border-color: #0A84FF; }
+.mc-title { color: white; font-size: 12px; background: rgba(0,0,0,.45); border-radius: 6px; padding: 2px 8px; }
+.mc-empty { color: white; font-size: 18px; opacity: .8; }
+"""
+
+
+def windows():
+    scr = Wnck.Screen.get_default()
+    scr.force_update()
+    ws = scr.get_active_workspace()
+    res = []
+    for w in scr.get_windows_stacked():
+        if w.is_skip_tasklist() or w.get_window_type() not in (Wnck.WindowType.NORMAL, Wnck.WindowType.DIALOG):
+            continue
+        if ws is not None and not w.is_on_workspace(ws) and not w.is_pinned():
+            continue
+        res.append(w)
+    return list(reversed(res))       # most recently used first
+
+
+def snapshot(w):
+    """Window contents (works for covered windows when the compositor is on)."""
+    if w.is_minimized():
+        return None
+    try:
+        disp = GdkX11.X11Display.get_default()
+        gw = GdkX11.X11Window.foreign_new_for_display(disp, w.get_xid())
+        if gw is None:
+            return None
+        width, height = gw.get_width(), gw.get_height()
+        return Gdk.pixbuf_get_from_window(gw, 0, 0, width, height)
+    except Exception:
+        return None
+
+
+class Mission(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Mission Control")
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_keep_above(True)
+        ctx = self.get_style_context(); ctx.add_class("mc-window")
+        screen = self.get_screen()
+        if screen.get_rgba_visual() and screen.is_composited():
+            self.set_visual(screen.get_rgba_visual()); self.set_app_paintable(False)
+        else:
+            ctx.add_class("solid")
+        self.items = []
+        self.sel = 0
+        wins = windows()
+        snaps = [(w, snapshot(w)) for w in wins]     # before our window covers them
+
+        disp = Gdk.Display.get_default()
+        mon = disp.get_primary_monitor() or disp.get_monitor(0)
+        geo = mon.get_geometry()
+        self.move(geo.x, geo.y)
+        self.set_default_size(geo.width, geo.height)
+        self.fullscreen()
+
+        ev = Gtk.EventBox(); ev.set_visible_window(False)
+        ev.connect("button-release-event", lambda *_: self.close_all())
+        self.add(ev)
+        fixed = Gtk.Fixed()
+        ev.add(fixed)
+        if not snaps:
+            l = Gtk.Label(label=tr("No open windows", "Nessuna finestra aperta"))
+            l.get_style_context().add_class("mc-empty")
+            fixed.put(l, geo.width // 2 - 90, geo.height // 2 - 12)
+        else:
+            self.layout(fixed, snaps, geo.width, geo.height)
+        self.connect("key-press-event", self.on_key)
+        self.connect("focus-out-event", lambda *_: GLib.timeout_add(200, self.close_if_unfocused))
+
+    def layout(self, fixed, snaps, sw, sh):
+        n = len(snaps)
+        margin, gap, label_h = 60, 30, 30
+        cols = max(1, math.ceil(math.sqrt(n * sw / sh * 0.75)))
+        rows = math.ceil(n / cols)
+        cw = (sw - 2 * margin - (cols - 1) * gap) / cols
+        ch = (sh - 2 * margin - (rows - 1) * gap) / rows - label_h
+        for i, (w, pb) in enumerate(snaps):
+            r, c = divmod(i, cols)
+            in_row = min(cols, n - r * cols)
+            row_w = in_row * cw + (in_row - 1) * gap
+            x0 = (sw - row_w) / 2 + c * (cw + gap)
+            y0 = margin + r * (ch + label_h + gap)
+            if pb is not None:
+                scale = min(cw / pb.get_width(), ch / pb.get_height(), 1.0)
+                tw, th = max(1, int(pb.get_width() * scale)), max(1, int(pb.get_height() * scale))
+                img = Gtk.Image.new_from_pixbuf(pb.scale_simple(tw, th, GdkPixbuf.InterpType.BILINEAR))
+            else:
+                icon = w.get_icon()
+                tw = th = int(min(cw, ch, 128))
+                img = Gtk.Image.new_from_pixbuf(icon.scale_simple(tw, th, GdkPixbuf.InterpType.BILINEAR)
+                                                if icon else None)
+            box = Gtk.EventBox()
+            frame = Gtk.Box(); frame.get_style_context().add_class("mc-thumb")
+            frame.pack_start(img, True, True, 0)
+            box.add(frame)
+            box.connect("button-release-event", lambda _b, _e, win=w: self.activate(win) or True)
+            box.connect("enter-notify-event", lambda _b, _e, k=i: self.select(k))
+            x = int(x0 + (cw - tw) / 2); y = int(y0 + (ch - th) / 2)
+            fixed.put(box, x, y)
+            t = Gtk.Label(label=w.get_name(), ellipsize=Pango.EllipsizeMode.END, max_width_chars=40)
+            t.get_style_context().add_class("mc-title")
+            fixed.put(t, int(x0 + cw / 2 - min(cw, 320) / 2), int(y0 + ch + 6))
+            t.set_size_request(int(min(cw, 320)), -1)
+            self.items.append((w, frame))
+        self.select(0)
+
+    def select(self, k):
+        if not self.items:
+            return
+        self.items[self.sel][1].get_style_context().remove_class("selected")
+        self.sel = k % len(self.items)
+        self.items[self.sel][1].get_style_context().add_class("selected")
+
+    def activate(self, w):
+        self.hide()
+        ts = Gtk.get_current_event_time() or GdkX11.x11_get_server_time(self.get_window())
+        try:
+            if w.get_workspace() is not None:
+                w.get_workspace().activate(ts)
+            w.activate(ts)
+        except Exception:
+            pass
+        GLib.timeout_add(50, self.close_all)
+
+    def on_key(self, w, ev):
+        k = ev.keyval
+        if k in (Gdk.KEY_Escape, Gdk.KEY_F3):
+            self.close_all()
+        elif k in (Gdk.KEY_Right, Gdk.KEY_Tab, Gdk.KEY_Down):
+            self.select(self.sel + 1)
+        elif k in (Gdk.KEY_Left, Gdk.KEY_Up, Gdk.KEY_ISO_Left_Tab):
+            self.select(self.sel - 1)
+        elif k in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space) and self.items:
+            self.activate(self.items[self.sel][0])
+        return True
+
+    def close_if_unfocused(self):
+        if not self.is_active():
+            self.close_all()
+        return False
+
+    def close_all(self, *_):
+        Gtk.main_quit()
+        return False
+
+
+def main():
+    # second press of F3 while open: the first instance closes on focus-out
+    load_css()
+    p = Gtk.CssProvider(); p.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = Mission()
+    w.connect("destroy", Gtk.main_quit)
+    w.show_all()
+    w.present_with_time(int(time.time()))
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=MangOS Control Center
+Exec=mangos-control-center --tray
+NoDisplay=true
+OnlyShowIn=XFCE;
+X-XFCE-Autostart-Override=true
