@@ -87,6 +87,10 @@ FF
 # Launchpad: MangOS System Settings (mangos-settings) shown like on a Mac;
 # the Xfce Settings Manager it replaces and other clutter hidden.
 sed -i '/^Categories=/s/X-MangOS-Launchpad;//' /usr/share/applications/xfce-settings-manager.desktop 2>/dev/null || true
+# Whatever still points at the Xfce Settings Manager (dock items, menus) opens
+# MangOS System Settings, with the gear icon.
+sed -i 's/^Exec=xfce4-settings-manager$/Exec=mangos-settings/; s/^Icon=org\.xfce\.settings\.manager$/Icon=preferences-system/' \
+  /usr/share/applications/xfce-settings-manager.desktop 2>/dev/null || true
 rm -f /etc/xdg/autostart/calamares-desktop-icon.desktop
 for f in xfce4-about debian-xterm debian-uxterm display-im6.q16 im-config ibus-setup \
          xfce4-run org.xfce.xfce4-appfinder xfce4-session-logout lightdm-gtk-greeter-settings \
