@@ -374,11 +374,18 @@ def popcon_names():
 
 def weekly_picks(cat, names):
     """Three most-used desktop apps you do not have yet; a new trio each week."""
-    pool = []
+    pool, families = [], set()
     for n in names:
         c = cat.by_pkg.get(n)
-        if c and n not in cat.installed and n not in cat.protected and cat.icon_file(c, 64):
-            pool.append(c)
+        if not c or n in cat.installed or n in cat.protected or not cat.icon_file(c, 64):
+            continue
+        # MangOS has no LibreOffice by design (ArtCraft instead), and one app
+        # per suite is enough (not Calc, Draw and Impress in the same week).
+        family = re.split(r"[-.]", n)[0]
+        if n.startswith("libreoffice") or family in families:
+            continue
+        families.add(family)
+        pool.append(c)
         if len(pool) >= WEEK_POOL:
             break
     if not pool:
