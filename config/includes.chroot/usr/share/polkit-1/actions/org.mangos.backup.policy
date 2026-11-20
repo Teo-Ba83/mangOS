@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <action id="org.mangos.backup">
+    <description>Make, delete or set up system backups</description>
+    <description xml:lang="it">Crea, elimina o configura i backup del sistema</description>
+    <message>Authentication is required to change system backups</message>
+    <message xml:lang="it">È richiesta l'autenticazione per modificare i backup del sistema</message>
+    <icon_name>timeshift</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/mangos/backup-helper</annotate>
+  </action>
+  <action id="org.mangos.backup.status">
+    <description>See the list of system backups</description>
+    <description xml:lang="it">Vedi l'elenco dei backup del sistema</description>
+    <message>Authentication is required to see system backups</message>
+    <message xml:lang="it">È richiesta l'autenticazione per vedere i backup del sistema</message>
+    <icon_name>timeshift</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/mangos/backup-status</annotate>
+  </action>
+</policyconfig>

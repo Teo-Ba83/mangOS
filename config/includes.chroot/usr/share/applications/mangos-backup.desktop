@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Backup
+Name[it]=Backup
+Comment=Time Machine-style copies of the system, before every update
+Comment[it]=Copie del sistema in stile Time Machine, prima di ogni aggiornamento
+Exec=mangos-backup
+Icon=timeshift
+Terminal=false
+Categories=Settings;System;X-MangOS-Launchpad;
+Keywords=backup;timeshift;restore;time machine;ripristino;

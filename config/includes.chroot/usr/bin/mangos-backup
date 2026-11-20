@@ -1,0 +1,272 @@
+#!/usr/bin/python3
+"""MangOS Backup: Time Machine-style copies of the system (Timeshift).
+
+Shows the last backup and the free space, turns automatic backups and
+"back up before updates" on or off, makes a backup now, lists the backups
+and restores one (with Timeshift, which then restarts the Mac). Status comes
+from /usr/lib/mangos/backup-status (no password); changes go through
+/usr/lib/mangos/backup-helper (administrator password, asked once)."""
+import json, subprocess, threading, time
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+CSS = b"""
+.bk-title { font-size: 26px; font-weight: 800; }
+.bk-sub { opacity: .6; }
+.bk-card { border-radius: 12px; border: 1px solid alpha(currentColor, .13); padding: 14px 16px;
+           background: alpha(currentColor, .03); }
+.bk-big { font-size: 17px; font-weight: 700; }
+.bk-dim { opacity: .62; font-size: 12px; }
+.bk-section { font-weight: 800; opacity: .7; margin-top: 10px; }
+.bk-list row { padding: 8px 10px; }
+.bk-tag { font-size: 10px; font-weight: 800; color: white; border-radius: 6px; padding: 1px 7px; }
+.tag-D, .tag-W { background: #34C759; }
+.tag-O { background: #0A84FF; }
+.tag-U { background: #FF9F0A; }
+"""
+TAGS = {"D": ("Daily", "Giornaliero"), "W": ("Weekly", "Settimanale"), "M": ("Monthly", "Mensile"),
+        "B": ("At startup", "All'avvio"), "H": ("Hourly", "Orario"), "O": ("Manual", "Manuale")}
+
+
+def run_status():
+    try:
+        out = subprocess.run(["pkexec", "/usr/lib/mangos/backup-status"], capture_output=True, text=True,
+                             timeout=120).stdout
+        return json.loads(out)
+    except Exception:
+        return None
+
+
+def nice_date(name):
+    try:
+        t = time.strptime(name, "%Y-%m-%d_%H-%M-%S")
+    except ValueError:
+        return name
+    days = (time.mktime(time.localtime()) // 86400) - (time.mktime(t) // 86400)
+    hm = time.strftime("%H:%M", t)
+    if days == 0:
+        return tr("Today, ", "Oggi, ") + hm
+    if days == 1:
+        return tr("Yesterday, ", "Ieri, ") + hm
+    return time.strftime("%d/%m/%Y, ", t) + hm
+
+
+class Backup(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=tr("Backup", "Backup"))
+        self.set_default_size(620, 640)
+        self.set_icon_name("timeshift")
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.busy = False
+        self.updating = False
+        hb = Gtk.HeaderBar(show_close_button=True, title=tr("Backup", "Backup"))
+        self.spinner = Gtk.Spinner(); hb.pack_end(self.spinner)
+        self.set_titlebar(hb)
+        sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.add(sw)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=22)
+        sw.add(self.box)
+
+        top = Gtk.Box(spacing=16)
+        icon = Gtk.Image.new_from_icon_name("timeshift", Gtk.IconSize.DIALOG); icon.set_pixel_size(84)
+        top.pack_start(icon, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, spacing=2)
+        t = Gtk.Label(label=tr("Backup", "Backup"), xalign=0); t.get_style_context().add_class("bk-title")
+        s = Gtk.Label(xalign=0, wrap=True, max_width_chars=50, label=tr(
+            "Copies of the system, like Time Machine: programs and settings. Made every day and before every update.",
+            "Copie del sistema, come Time Machine: programmi e impostazioni. Ogni giorno e prima di ogni aggiornamento."))
+        s.get_style_context().add_class("bk-sub")
+        tb.pack_start(t, False, False, 0); tb.pack_start(s, False, False, 0)
+        top.pack_start(tb, True, True, 0)
+        self.box.pack_start(top, False, False, 0)
+
+        self.content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.box.pack_start(self.content, False, False, 0)
+        self.message = Gtk.Label(xalign=0, wrap=True)
+        self.box.pack_start(self.message, False, False, 0)
+        self.refresh()
+
+    # ---- data
+    def refresh(self):
+        self.spinner.start()
+
+        def work():
+            st = run_status()
+            GLib.idle_add(self.show, st)
+        threading.Thread(target=work, daemon=True).start()
+
+    def show(self, st):
+        self.spinner.stop()
+        for c in self.content.get_children():
+            c.destroy()
+        if st is None:
+            self.note(tr("Could not read the backups.", "Non riesco a leggere i backup.")); return False
+        if not st.get("available"):
+            self.note(tr("Timeshift is not installed.", "Timeshift non è installato.")); return False
+        if st.get("live"):
+            self.note(tr("Backups are available after MangOS is installed.",
+                         "I backup sono disponibili dopo aver installato MangOS.")); return False
+        if not st.get("configured"):
+            self.note(tr("Backups are not set up yet (they need at least 8 GB free).",
+                         "I backup non sono ancora attivi (servono almeno 8 GB liberi)."))
+            b = Gtk.Button(label=tr("Turn On Backups", "Attiva i backup"), halign=Gtk.Align.START)
+            b.get_style_context().add_class("suggested-action")
+            b.connect("clicked", lambda *_: self.helper(["setup"], tr("Setting up…", "Configurazione…")))
+            self.content.pack_start(b, False, False, 0); self.content.show_all()
+            return False
+
+        snaps = st.get("snapshots", [])
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        card.get_style_context().add_class("bk-card")
+        last = Gtk.Label(xalign=0, label=(tr("Last backup: ", "Ultimo backup: ") + nice_date(snaps[0]["name"]))
+                         if snaps else tr("No backups yet", "Nessun backup ancora"))
+        last.get_style_context().add_class("bk-big")
+        card.pack_start(last, False, False, 0)
+        free = Gtk.Label(xalign=0, label=tr("Free space on the disk: ", "Spazio libero sul disco: ") +
+                         (st.get("free") or f"{st.get('free_gb', 0)} GB") +
+                         tr(f" · {len(snaps)} backups kept", f" · {len(snaps)} backup conservati"))
+        free.get_style_context().add_class("bk-dim")
+        card.pack_start(free, False, False, 0)
+        acts = Gtk.Box(spacing=10, margin_top=8)
+        now = Gtk.Button(label=tr("Back Up Now", "Esegui backup ora"))
+        now.get_style_context().add_class("suggested-action")
+        now.connect("clicked", lambda *_: self.helper(["now", tr("Manual", "Manuale")],
+                                                      tr("Backing up… (a few minutes, the first time longer)",
+                                                         "Backup in corso… (qualche minuto, la prima volta di più)")))
+        rest = Gtk.Button(label=tr("Restore…", "Ripristina…"))
+        rest.connect("clicked", lambda *_: self.restore())
+        rest.set_sensitive(bool(snaps))
+        acts.pack_start(now, False, False, 0); acts.pack_start(rest, False, False, 0)
+        card.pack_start(acts, False, False, 0)
+        self.content.pack_start(card, False, False, 0)
+
+        opts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        opts.get_style_context().add_class("bk-card")
+        self.updating = True
+        for key, en, it, sub_en, sub_it, val in (
+                ("auto", "Back up automatically", "Backup automatici",
+                 "Every day (3 kept) and every week (2 kept)", "Ogni giorno (ne tiene 3) e ogni settimana (ne tiene 2)",
+                 st.get("auto")),
+                ("before-updates", "Back up before updates", "Backup prima degli aggiornamenti",
+                 "Before MangOS and Debian updates (the last 3 are kept)",
+                 "Prima degli aggiornamenti di MangOS e Debian (tiene gli ultimi 3)", st.get("before_updates"))):
+            row = Gtk.Box(spacing=12)
+            lb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            a = Gtk.Label(label=tr(en, it), xalign=0)
+            b = Gtk.Label(label=tr(sub_en, sub_it), xalign=0); b.get_style_context().add_class("bk-dim")
+            lb.pack_start(a, False, False, 0); lb.pack_start(b, False, False, 0)
+            row.pack_start(lb, True, True, 0)
+            sw = Gtk.Switch(active=bool(val), valign=Gtk.Align.CENTER)
+            sw.connect("notify::active", lambda w, _p, k=key: None if self.updating else
+                       self.helper(["set", k, "yes" if w.get_active() else "no"], tr("Saving…", "Salvataggio…")))
+            row.pack_end(sw, False, False, 0)
+            opts.pack_start(row, False, False, 0)
+        self.updating = False
+        self.content.pack_start(opts, False, False, 0)
+
+        h = Gtk.Label(label=tr("Backups", "Backup"), xalign=0); h.get_style_context().add_class("bk-section")
+        self.content.pack_start(h, False, False, 0)
+        lst = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        lst.get_style_context().add_class("bk-list"); lst.get_style_context().add_class("bk-card")
+        if not snaps:
+            lst.add(Gtk.Label(label=tr("The first backup is made within the hour, or press Back Up Now.",
+                                       "Il primo backup viene fatto entro un'ora, oppure premi Esegui backup ora."),
+                              xalign=0, wrap=True))
+        for s in snaps:
+            r = Gtk.Box(spacing=10)
+            r.pack_start(Gtk.Image.new_from_icon_name("document-open-recent-symbolic", Gtk.IconSize.MENU), False, False, 0)
+            tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            a = Gtk.Label(label=nice_date(s["name"]), xalign=0)
+            comment = s["comment"]
+            if comment.startswith("MangOS:"):
+                comment = tr("Before ", "Prima di ") + comment.split(" before ", 1)[-1]
+            b = Gtk.Label(label=comment, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            b.get_style_context().add_class("bk-dim")
+            tb.pack_start(a, False, False, 0)
+            if comment:
+                tb.pack_start(b, False, False, 0)
+            r.pack_start(tb, True, True, 0)
+            for tag in s["tags"] or "O":
+                key = "U" if (tag == "O" and s["comment"].startswith("MangOS:")) else tag
+                name = tr("Before update", "Prima aggiornamento") if key == "U" else tr(*TAGS.get(tag, (tag, tag)))
+                tl = Gtk.Label(label=name.upper(), valign=Gtk.Align.CENTER); tl.get_style_context().add_class("bk-tag")
+                tl.get_style_context().add_class(f"tag-{key}")
+                r.pack_start(tl, False, False, 0)
+            d = Gtk.Button.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
+            d.set_relief(Gtk.ReliefStyle.NONE); d.set_tooltip_text(tr("Delete", "Elimina"))
+            d.connect("clicked", lambda *_a, n=s["name"]: self.delete(n))
+            r.pack_end(d, False, False, 0)
+            lst.add(r)
+        self.content.pack_start(lst, False, False, 0)
+        foot = Gtk.Label(xalign=0, wrap=True, label=tr(
+            "Backups are on the same disk and protect the system, not your documents: copy documents to an "
+            "external disk or a cloud service.",
+            "I backup sono sullo stesso disco e proteggono il sistema, non i tuoi documenti: copia i documenti "
+            "su un disco esterno o un servizio cloud."))
+        foot.get_style_context().add_class("bk-dim")
+        self.content.pack_start(foot, False, False, 0)
+        self.content.show_all()
+        return False
+
+    def note(self, text):
+        l = Gtk.Label(label=text, xalign=0, wrap=True)
+        self.content.pack_start(l, False, False, 0); self.content.show_all()
+
+    # ---- actions
+    def helper(self, args, label):
+        if self.busy:
+            return
+        self.busy = True
+        self.spinner.start(); self.message.set_text(label)
+        self.content.set_sensitive(False)
+
+        def work():
+            r = subprocess.run(["pkexec", "/usr/lib/mangos/backup-helper"] + args, capture_output=True, text=True)
+            GLib.idle_add(done, r.returncode, (r.stderr or r.stdout).strip().splitlines()[-1:] or [""])
+
+        def done(rc, last):
+            self.busy = False
+            self.content.set_sensitive(True)
+            self.message.set_text("" if rc == 0 else (tr("Did not work: ", "Non riuscito: ") + last[0]
+                                                      if rc != 126 else ""))
+            self.refresh()
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    def delete(self, name):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.OK_CANCEL,
+                              text=tr("Delete the backup of ", "Eliminare il backup di ") + nice_date(name) + "?")
+        if d.run() == Gtk.ResponseType.OK:
+            self.helper(["delete", name], tr("Deleting…", "Eliminazione…"))
+        d.destroy()
+
+    def restore(self):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.OK_CANCEL,
+                              text=tr("Restore the system", "Ripristinare il sistema"))
+        d.format_secondary_text(tr(
+            "Timeshift opens: choose the backup, press Restore and follow the steps. The Mac restarts with the "
+            "system as it was then. Your documents are not touched.\n\nIf MangOS does not start at all, start "
+            "from the MangOS USB stick and open Timeshift there.",
+            "Si apre Timeshift: scegli il backup, premi Ripristina e segui i passaggi. Il Mac si riavvia con il "
+            "sistema com'era allora. I tuoi documenti non vengono toccati.\n\nSe MangOS non si avvia proprio, "
+            "parti dalla chiavetta di MangOS e apri Timeshift da lì."))
+        if d.run() == Gtk.ResponseType.OK:
+            subprocess.Popen(["timeshift-launcher"])
+        d.destroy()
+
+
+def main():
+    load_css()
+    p = Gtk.CssProvider(); p.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = Backup(); w.connect("destroy", Gtk.main_quit); w.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

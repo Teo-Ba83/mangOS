@@ -143,6 +143,33 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 - "App Store" is an Apple trademark, so the MangOS one is called
   **Mango Store**, with its own icon (the MangOS mango on a teal tile).
 
+## Flathub
+
+- The **Flathub** section of the Mango Store adds thousands of apps (Spotify,
+  Discord, OBS, Telegram, VS Code...). It is turned on with one button: that
+  adds the Flathub repository and downloads its catalog (about 100 MB of
+  data and icons). The first Flathub app also downloads its runtime (a few
+  hundred MB); later apps share it.
+- "Most downloaded this month" uses Flathub's own download statistics;
+  LibreOffice and games or launchers that need Vulkan / OpenGL 3+ are left
+  out, because this Mac's graphics cannot run them.
+- Flathub apps run in a sandbox; many are built with Electron and use
+  software rendering on the GMA X3100 (they work, but are heavier).
+- When an app is both in Debian and on Flathub, the Store shows the Debian
+  one and offers the Flathub one on its page.
+
+## Backups
+
+- **Backup** (Settings, Launchpad) uses Timeshift: snapshots of the system
+  (programs and settings, not documents) on the same disk, every day (3 kept),
+  every week (2 kept) and before MangOS / Debian updates (last 3 kept, at most
+  one every 6 hours). Set up automatically when there are at least 8 GB free.
+- Flatpak apps and the package cache are not copied (they can be downloaded
+  again).
+- Restoring opens Timeshift and restarts the Mac. If MangOS does not start,
+  boot the MangOS USB stick: Timeshift is there too.
+- Backups on the same disk do not protect against a broken disk.
+
 ## Installer
 
 - Under emulation (no KVM) the install took about 30 minutes; on the

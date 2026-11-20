@@ -38,6 +38,8 @@ GROUPS = [
     [
         ("update", "Software Update", "Aggiornamento software", "#8E8E93", "software-update-available-symbolic",
          ["mangos-update"], False, "update upgrade aggiornamento"),
+        ("backup", "Backup", "Backup", "#30B0C7", "document-open-recent-symbolic",
+         ["mangos-backup"], False, "backup time machine timeshift restore ripristina copie"),
         ("language", "Language & Region", "Lingua e area geografica", "#0A84FF", "preferences-desktop-locale-symbolic",
          ["mangos-language"], False, "language region locale italiano english lingua"),
         ("apps", "Default Apps", "App predefinite", "#8E8E93", "applications-system-symbolic",

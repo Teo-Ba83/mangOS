@@ -57,7 +57,7 @@ export GTK_MODULES UBUNTU_MENUPROXY=1
 XS
 
 # Services: Mac keyboard, MacBook fans, MangOS updates; no slow boot waits.
-systemctl enable keyd.service mbpfan.service mangos-updater.timer >/dev/null 2>&1 || true
+systemctl enable keyd.service mbpfan.service mangos-updater.timer mangos-backup.timer >/dev/null 2>&1 || true
 systemctl disable NetworkManager-wait-online.service >/dev/null 2>&1 || true
 
 # Automatic security updates from Debian
@@ -96,7 +96,7 @@ for f in xfce4-about debian-xterm debian-uxterm display-im6.q16 im-config ibus-s
          xfce4-run org.xfce.xfce4-appfinder xfce4-session-logout lightdm-gtk-greeter-settings \
          rofi rofi-theme-selector blueman-adapters vim plank xfce4-mail-reader xfce4-web-browser \
          xfce4-file-manager xfce4-terminal-emulator calamares-install-debian thunar-bulk-rename \
-         thunar-settings xfce4-settings-editor org.xfce.mousepad-settings; do
+         thunar-settings xfce4-settings-editor org.xfce.mousepad-settings timeshift-gtk; do
   d=/usr/share/applications/$f.desktop
   if [ -f "$d" ]; then
     sed -i '/^NoDisplay=/d; 0,/^\[Desktop Entry\]$/s//[Desktop Entry]\nNoDisplay=true/' "$d"
@@ -160,4 +160,10 @@ GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3"
 GRUB_GFXMODE=auto
 G
 grep -q '^i915' /etc/initramfs-tools/modules || echo i915 >> /etc/initramfs-tools/modules
+
+# Backups (Timeshift): set up once on an installed system, not in the image
+# or the live session (the helper checks for both).
+if ! $BUILD && [ -x /usr/lib/mangos/backup-helper ]; then
+  /usr/lib/mangos/backup-helper setup >/dev/null 2>&1 || true
+fi
 exit 0

@@ -1,0 +1,196 @@
+#!/usr/bin/python3
+"""MangOS backups: snapshots of the system with Timeshift (rsync, same disk).
+
+Like Time Machine for the system: programs and settings, not documents
+(Timeshift leaves /home out). Runs as root.
+  backup-helper status                 JSON for the Backup panel
+  backup-helper setup                  configure Timeshift for this computer
+  backup-helper now                    take a snapshot now
+  backup-helper before-update WHAT     snapshot before an update (if enabled,
+                                       at most one every 6 hours)
+  backup-helper scheduled              hourly timer: daily/weekly snapshots
+  backup-helper delete NAME            delete a snapshot
+  backup-helper set auto|before-updates yes|no
+Settings: /etc/mangos/backup.conf. Snapshots taken before updates keep the
+newest 3; daily keep 3, weekly keep 2 (Timeshift's own rotation)."""
+import json, os, re, shutil, subprocess, sys, time
+
+TS_CONF = "/etc/timeshift/timeshift.json"
+TS_DEFAULT = "/etc/timeshift/default.json"
+CONF = "/etc/mangos/backup.conf"
+MIN_FREE_GB = 8
+KEEP_BEFORE_UPDATE = 3
+BEFORE_UPDATE_TAG = "MangOS:"
+
+
+def live():
+    try:
+        return "boot=live" in open("/proc/cmdline").read().split()
+    except OSError:
+        return False
+
+
+def settings():
+    s = {"MANGOS_BACKUP_AUTO": "yes", "MANGOS_BACKUP_BEFORE_UPDATES": "yes"}
+    try:
+        for line in open(CONF):
+            k, _, v = line.strip().partition("=")
+            if k in s:
+                s[k] = v.strip().strip('"')
+    except OSError:
+        pass
+    return s
+
+
+def save_settings(s):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    with open(CONF, "w") as f:
+        f.write("# MangOS backups (Settings > Backup)\n")
+        for k, v in s.items():
+            f.write(f"{k}={v}\n")
+
+
+def free_gb(path="/"):
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize / 1e9
+
+
+def root_uuid():
+    out = subprocess.run(["findmnt", "-no", "UUID", "/"], capture_output=True, text=True).stdout.strip()
+    return out
+
+
+def ts_config():
+    try:
+        return json.load(open(TS_CONF))
+    except Exception:
+        return None
+
+
+def configured():
+    c = ts_config()
+    return bool(c and c.get("backup_device_uuid"))
+
+
+def write_ts(cfg):
+    os.makedirs(os.path.dirname(TS_CONF), exist_ok=True)
+    tmp = TS_CONF + ".new"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, TS_CONF)
+
+
+def apply_schedule(cfg, auto):
+    on = "true" if auto else "false"
+    cfg.update({"schedule_daily": on, "count_daily": "3", "schedule_weekly": on, "count_weekly": "2",
+                "schedule_monthly": "false", "schedule_hourly": "false", "schedule_boot": "false"})
+
+
+def setup():
+    if live() or not shutil.which("timeshift"):
+        return 0
+    if configured():
+        return 0
+    uuid = root_uuid()
+    if not uuid:
+        print("cannot find the system disk", file=sys.stderr); return 1
+    if free_gb() < MIN_FREE_GB:
+        print(f"not enough free space for backups (needs {MIN_FREE_GB} GB)", file=sys.stderr); return 1
+    try:
+        cfg = json.load(open(TS_DEFAULT))
+    except Exception:
+        cfg = {}
+    cfg.update({"backup_device_uuid": uuid, "parent_device_uuid": "", "do_first_run": "false",
+                "btrfs_mode": "false", "include_btrfs_home": "false", "stop_cron_emails": "true"})
+    # user files are not part of system snapshots (Timeshift's default), nor
+    # Flatpak apps and package caches, which can be downloaded again
+    cfg["exclude"] = sorted(set(cfg.get("exclude", [])) | {"/var/lib/flatpak/**", "/var/cache/apt/archives/**"})
+    apply_schedule(cfg, settings()["MANGOS_BACKUP_AUTO"] == "yes")
+    write_ts(cfg)
+    print("backups configured on", uuid)
+    return 0
+
+
+def timeshift(*args, timeout=None):
+    return subprocess.run(["timeshift", *args, "--scripted"], capture_output=True, text=True, timeout=timeout)
+
+
+def snapshots():
+    """[{name, tags, comment}] newest first, plus free space text."""
+    r = timeshift("--list")
+    snaps, free = [], ""
+    for line in r.stdout.splitlines():
+        m = re.match(r"^\s*\d+\s+>?\s+(\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d)(.*)$", line)
+        if m:
+            words, tags = m.group(2).split(), ""
+            while words and len(words[0]) == 1 and words[0] in "OBHDWM":
+                tags += words.pop(0)
+            snaps.append({"name": m.group(1), "tags": tags, "comment": " ".join(words)})
+        m = re.search(r"([\d.]+ \w?B) free", line)
+        if m:
+            free = m.group(1)
+    snaps.sort(key=lambda s: s["name"], reverse=True)
+    return snaps, free
+
+
+def create(comment, tags="O"):
+    if free_gb() < MIN_FREE_GB / 2:
+        print("not enough free space for a backup", file=sys.stderr); return 1
+    r = subprocess.run(["timeshift", "--create", "--comments", comment, "--tags", tags, "--scripted"])
+    return r.returncode
+
+
+def prune_before_update():
+    snaps, _ = snapshots()
+    pre = [s for s in snaps if s["comment"].startswith(BEFORE_UPDATE_TAG)]
+    for s in pre[KEEP_BEFORE_UPDATE:]:
+        timeshift("--delete", "--snapshot", s["name"])
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    s = settings()
+    if cmd == "status":
+        out = {"available": bool(shutil.which("timeshift")), "live": live(), "configured": configured(),
+               "auto": s["MANGOS_BACKUP_AUTO"] == "yes", "before_updates": s["MANGOS_BACKUP_BEFORE_UPDATES"] == "yes",
+               "free_gb": round(free_gb(), 1), "snapshots": [], "free": ""}
+        if out["configured"]:
+            out["snapshots"], out["free"] = snapshots()
+        print(json.dumps(out)); return 0
+    if cmd == "setup":
+        return setup()
+    if cmd == "now":
+        if setup() != 0:
+            return 1
+        return create("Manual" if len(sys.argv) < 3 else sys.argv[2][:80])
+    if cmd == "before-update":
+        if live() or s["MANGOS_BACKUP_BEFORE_UPDATES"] != "yes" or setup() != 0:
+            return 0
+        snaps, _ = snapshots()
+        if snaps:
+            last = time.mktime(time.strptime(snaps[0]["name"], "%Y-%m-%d_%H-%M-%S"))
+            if time.time() - last < 6 * 3600:
+                print("recent snapshot exists, skipping"); return 0
+        what = " ".join(sys.argv[2:])[:60] or "update"
+        rc = create(f"{BEFORE_UPDATE_TAG} before {what}")
+        prune_before_update()
+        return 0 if rc == 0 else rc     # callers go on with the update anyway
+    if cmd == "scheduled":
+        if live() or s["MANGOS_BACKUP_AUTO"] != "yes" or not configured():
+            return 0
+        return timeshift("--check").returncode
+    if cmd == "delete" and len(sys.argv) > 2:
+        if not re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", sys.argv[2]):
+            return 2
+        return timeshift("--delete", "--snapshot", sys.argv[2]).returncode
+    if cmd == "set" and len(sys.argv) > 3 and sys.argv[2] in ("auto", "before-updates") and sys.argv[3] in ("yes", "no"):
+        key = "MANGOS_BACKUP_AUTO" if sys.argv[2] == "auto" else "MANGOS_BACKUP_BEFORE_UPDATES"
+        s[key] = sys.argv[3]; save_settings(s)
+        if key == "MANGOS_BACKUP_AUTO" and configured():
+            cfg = ts_config(); apply_schedule(cfg, sys.argv[3] == "yes"); write_ts(cfg)
+        return 0
+    print(__doc__); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

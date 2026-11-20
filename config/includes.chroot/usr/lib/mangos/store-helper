@@ -4,6 +4,9 @@
 #   store-helper install PKG...     install Debian packages
 #   store-helper remove PKG...      remove them (never MangOS itself)
 #   store-helper upgrade            MangOS update + all Debian updates
+#   store-helper flathub-setup      add Flathub and download its catalog
+#   store-helper flatpak-install ID install a Flathub app (system-wide)
+#   store-helper flatpak-remove ID  remove it
 #   store-helper install-localsend  LocalSend, the exact file verified when
 #                                   this MangOS build was made (SHA-256 in
 #                                   /usr/share/mangos/localsend.conf)
@@ -11,6 +14,18 @@
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 APT="apt-get -y -q -o APT::Status-Fd=1 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+check_flatpak_id() {
+  case "$1" in ""|-*|*[!A-Za-z0-9._-]*|*..*) echo "invalid app id: $1" >&2; exit 2;; esac
+  case "$1" in *.*.*) ;; *) echo "invalid app id: $1" >&2; exit 2;; esac
+}
+# flatpak redraws its progress with carriage returns: one line per update
+fp() {   # ...and keep flatpak's exit status through the pipe
+  exec 4>&1
+  rc=$( { { if flatpak "$@" 2>&1; then echo 0 >&3; else echo $? >&3; fi; } | stdbuf -oL tr '\r' '\n' >&4; } 3>&1 )
+  exec 4>&-
+  return "$rc"
+}
+have_flathub() { command -v flatpak >/dev/null && flatpak remotes --system --columns=name | grep -qx flathub; }
 check_names() {
   for p in "$@"; do
     case "$p" in ""|-*|*[!a-z0-9.+-]*) echo "invalid package name: $p" >&2; exit 2;; esac
@@ -18,7 +33,19 @@ check_names() {
 }
 cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$cmd" in
-  refresh) apt-get -q -o APT::Status-Fd=1 update ;;
+  refresh)
+    apt-get -q -o APT::Status-Fd=1 update
+    if have_flathub; then fp update --appstream flathub || true; fi ;;
+  flathub-setup)
+    flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+    fp update --appstream flathub ;;
+  flatpak-install)
+    check_flatpak_id "${1:-}"
+    fp install --system -y --noninteractive flathub "$1" ;;
+  flatpak-remove)
+    check_flatpak_id "${1:-}"
+    fp uninstall --system -y --noninteractive "$1"
+    fp uninstall --system -y --noninteractive --unused || true ;;
   install)
     [ $# -gt 0 ] || exit 2; check_names "$@"
     apt-get -q update >/dev/null 2>&1 || true
@@ -32,7 +59,9 @@ case "$cmd" in
   upgrade)
     /usr/lib/mangos/mangos-updater install || true
     apt-get -q -o APT::Status-Fd=1 update
-    $APT full-upgrade ;;
+    [ -x /usr/lib/mangos/backup-helper ] && /usr/lib/mangos/backup-helper before-update "updates" >/dev/null 2>&1 || true
+    $APT full-upgrade
+    if have_flathub; then fp update --system -y --noninteractive || true; fi ;;
   install-localsend)
     conf=/usr/share/mangos/localsend.conf
     [ -r "$conf" ] || { echo "LocalSend is not available for this MangOS build." >&2; exit 3; }
@@ -46,5 +75,5 @@ case "$cmd" in
     chmod 644 "$tmp/localsend.deb"; chmod 755 "$tmp"
     apt-get -q update >/dev/null 2>&1 || true
     $APT install "$tmp/localsend.deb" ;;
-  *) echo "usage: store-helper refresh|install PKG...|remove PKG...|upgrade|install-localsend" >&2; exit 2 ;;
+  *) echo "usage: store-helper refresh|install PKG...|remove PKG...|upgrade|flathub-setup|flatpak-install ID|flatpak-remove ID|install-localsend" >&2; exit 2 ;;
 esac

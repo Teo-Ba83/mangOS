@@ -1,0 +1,3 @@
+#!/bin/sh
+# Read-only backup status for the Backup panel (polkit: no password).
+exec /usr/lib/mangos/backup-helper status

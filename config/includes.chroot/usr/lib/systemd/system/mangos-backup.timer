@@ -1,0 +1,10 @@
+[Unit]
+Description=MangOS: check every hour whether a system backup is due
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

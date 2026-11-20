@@ -241,3 +241,5 @@ redshift
 gir1.2-wnck-3.0
 poppler-utils
 pulseaudio-utils
+flatpak
+timeshift

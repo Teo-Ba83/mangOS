@@ -54,6 +54,8 @@ if [ "$PKG" != mangos-system ] || [ "$VER" != "$NEW" ]; then
   log "package does not match the announced version ($PKG $VER), refused"; exit 3
 fi
 [ "${MANGOS_UPDATER_DRY_RUN:-}" = 1 ] && { log "dry run: verified $PKG $VER, not installing"; exit 0; }
+# Time Machine-style: snapshot the system first (if enabled; never blocks the update)
+[ -x /usr/lib/mangos/backup-helper ] && /usr/lib/mangos/backup-helper before-update "MangOS $VER" >/dev/null 2>&1 || true
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q >/dev/null || true

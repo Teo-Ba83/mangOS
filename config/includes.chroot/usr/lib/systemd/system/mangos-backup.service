@@ -1,0 +1,10 @@
+[Unit]
+Description=MangOS: daily/weekly system backup when due (Timeshift)
+ConditionKernelCommandLine=!boot=live
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Nice=15
+IOSchedulingClass=idle
+ExecStart=/usr/lib/mangos/backup-helper scheduled

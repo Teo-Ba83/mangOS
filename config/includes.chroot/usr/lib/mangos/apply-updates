@@ -10,6 +10,7 @@ case $? in
   3) m=refused ;;
   *) m=failed ;;
 esac
+[ -x /usr/lib/mangos/backup-helper ] && /usr/lib/mangos/backup-helper before-update "Debian updates" >/dev/null 2>&1 || true
 if apt-get update -q && apt-get -y -q -o Dpkg::Options::=--force-confold full-upgrade; then d=ok; else d=failed; fi
 echo "mangos=$m debian=$d" > /run/mangos-update.status
 [ "$d" = ok ] && touch /run/mangos-update.ok
