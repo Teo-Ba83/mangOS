@@ -4,7 +4,7 @@
 #   b43  open-source driver with the bundled firmware (reserve)
 #
 #   mangos-wifi-driver status
-#   sudo mangos-wifi-driver wl|b43            switch now and keep it
+#   sudo mangos-wifi-driver wl|b43            choose it (takes effect at the next start)
 #   sudo mangos-wifi-driver --runtime wl|b43  switch now, until reboot
 #   mangos-wifi-driver --write-config wl|b43  only rewrite the modprobe file
 # At boot, "mangos.wifi=b43" (or =wl) on the kernel command line switches for
@@ -104,25 +104,27 @@ case "${1:-status}" in
     if [ -n "$mode" ]; then
       check_mode "$mode"; swap_modules "$mode"; echo "Wi-Fi driver for this boot (mangos.wifi): $mode"; exit 0
     fi
-    # Self-heal, before NetworkManager starts: the card must have the chosen
-    # driver. Seen on the MacBook: no driver at all, or wl chosen but the b43
-    # path (ssb's b43-pci-bridge) holding the card, i.e. the slow driver.
+    # Before NetworkManager starts. Never swap drivers while one holds the
+    # card: on the MacBook that froze the whole system. Only if the card has
+    # no driver at all (seen after switching back from b43) load the chosen one.
     udevadm settle -t 15 2>/dev/null || true
     broadcom_dev >/dev/null || exit 0
     mode=$(cat "$STATE" 2>/dev/null || echo wl); check_mode "$mode"
     have=$(card_driver); want=$(wanted_driver "$mode")
-    if [ "$have" != "$want" ]; then
-      echo "Wi-Fi card driver is '${have:-none}', wanted '$want': fixing"
-      dev=$(broadcom_dev)
-      [ -n "$have" ] && echo "${dev##*/}" > "/sys/bus/pci/drivers/$have/unbind" 2>/dev/null || true
-      if [ "$mode" = wl ]; then modprobe -r b43 b43legacy bcma ssb wl 2>/dev/null || true; fi
+    if [ -z "$have" ]; then
+      echo "Wi-Fi card has no driver; loading $mode"
+      if [ "$mode" = wl ]; then modprobe -r ssb bcma 2>/dev/null || true; fi
       swap_modules "$mode" || true
-      sleep 1
-      echo "Wi-Fi card driver now: $(card_driver)"
+    elif [ "$have" != "$want" ]; then
+      # wrong driver: make sure the next start uses the chosen one
+      echo "Wi-Fi card uses '$have' instead of '$want'; fixed for the next start"
+      write_config "$mode"; update-initramfs -u >/dev/null 2>&1 || true
     fi ;;
   wl|b43)
-    need_root; write_config "$1"; echo "$1" > "$STATE"; swap_modules "$1"; unpin_profiles
+    # Switching while the card is in use can freeze this Mac: save the choice
+    # and let the next start load it (use --runtime to try it right away).
+    need_root; write_config "$1"; echo "$1" > "$STATE"; unpin_profiles
     if ! grep -qw boot=live /proc/cmdline; then update-initramfs -u >/dev/null 2>&1 || true; fi
-    echo "Wi-Fi driver set to $1 (kept after reboot)" ;;
+    echo "Wi-Fi driver set to $1: restart the Mac to use it" ;;
   *) sed -n '2,12p' "$0"; exit 2 ;;
 esac
