@@ -1,0 +1,21 @@
+#!/bin/sh
+# MangOS: keep the Broadcom Wi-Fi drivers out of the initramfs.
+# They are not needed to start the system. When they were in it, b43 (with
+# ssb's b43-pci-bridge) took the MacBook's BCM4321 before the root file
+# system was mounted, so the driver chosen in /etc/modprobe.d (wl, the fast
+# one) never got the card. Now the chosen driver loads after the switch to
+# the real system, where mangos-wifi-driver's configuration applies.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
+
+[ -n "${DESTDIR:-}" ] && [ -d "$DESTDIR" ] || exit 0
+# Whatever copies modules later, the initramfs never loads these (ssb's PCI
+# part, b43-pci-bridge, binds the card as soon as ssb is loaded).
+mkdir -p "$DESTDIR/etc/modprobe.d"
+for m in ssb b43 b43legacy bcma brcmsmac wl; do echo "install $m /bin/false"; done \
+  > "$DESTDIR/etc/modprobe.d/mangos-initramfs-no-wifi.conf"
+find "$DESTDIR" -path '*/lib/modules/*' -type f \
+  \( -name 'ssb.ko*' -o -name 'b43.ko*' -o -name 'b43legacy.ko*' -o -name 'bcma.ko*' \
+     -o -name 'brcmsmac.ko*' -o -name 'brcmutil.ko*' -o -name 'wl.ko*' \) -delete
+exit 0
