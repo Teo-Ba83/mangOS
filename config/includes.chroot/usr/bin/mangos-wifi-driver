@@ -71,14 +71,21 @@ unpin_profiles() {
   return 0
 }
 
-unbound_broadcom() { # a Broadcom Wi-Fi card (PCI class 0280) with no driver
+broadcom_dev() { # sysfs path of the Broadcom Wi-Fi card (PCI class 0280)
   for d in /sys/bus/pci/devices/*; do
     [ "$(cat "$d/vendor" 2>/dev/null)" = 0x14e4 ] || continue
-    case "$(cat "$d/class" 2>/dev/null)" in 0x0280*) ;; *) continue;; esac
-    [ -e "$d/driver" ] || return 0
+    case "$(cat "$d/class" 2>/dev/null)" in 0x0280*) echo "$d"; return 0;; esac
   done
   return 1
 }
+
+card_driver() { # driver bound to the card now ("" = none)
+  d=$(broadcom_dev) || return 0
+  [ -e "$d/driver" ] && basename "$(readlink "$d/driver")"
+  return 0
+}
+
+wanted_driver() { [ "$1" = b43 ] && echo b43-pci-bridge || echo wl; }
 
 need_root() { [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }; }
 check_mode() { case "$1" in wl|b43) ;; *) echo "mode must be wl or b43" >&2; exit 2;; esac; }
@@ -87,6 +94,7 @@ case "${1:-status}" in
   status)
     echo "configured: $(cat $STATE 2>/dev/null || echo wl)"
     echo "loaded:     $(lsmod | awk '$1 ~ /^(wl|b43|b43legacy|ssb|bcma|brcmsmac)$/ {printf "%s ", $1}')"
+    echo "card uses:  $(card_driver)"
     ;;
   --write-config) check_mode "$2"; need_root; write_config "$2"; echo "$2" > "$STATE" ;;
   --runtime) check_mode "$2"; need_root; swap_modules "$2"; unpin_profiles; echo "Wi-Fi driver for this boot: $2" ;;
@@ -96,14 +104,21 @@ case "${1:-status}" in
     if [ -n "$mode" ]; then
       check_mode "$mode"; swap_modules "$mode"; echo "Wi-Fi driver for this boot (mangos.wifi): $mode"; exit 0
     fi
-    # Self-heal: the configured driver is loaded but did not take the card
-    # (seen with wl after switching back from b43). Reload it cleanly.
+    # Self-heal, before NetworkManager starts: the card must have the chosen
+    # driver. Seen on the MacBook: no driver at all, or wl chosen but the b43
+    # path (ssb's b43-pci-bridge) holding the card, i.e. the slow driver.
     udevadm settle -t 15 2>/dev/null || true
-    if unbound_broadcom; then
-      mode=$(cat "$STATE" 2>/dev/null || echo wl); check_mode "$mode"
-      echo "Wi-Fi card has no driver; reloading $mode"
-      if [ "$mode" = wl ]; then modprobe -r wl ssb bcma b43 b43legacy 2>/dev/null || true; fi
+    broadcom_dev >/dev/null || exit 0
+    mode=$(cat "$STATE" 2>/dev/null || echo wl); check_mode "$mode"
+    have=$(card_driver); want=$(wanted_driver "$mode")
+    if [ "$have" != "$want" ]; then
+      echo "Wi-Fi card driver is '${have:-none}', wanted '$want': fixing"
+      dev=$(broadcom_dev)
+      [ -n "$have" ] && echo "${dev##*/}" > "/sys/bus/pci/drivers/$have/unbind" 2>/dev/null || true
+      if [ "$mode" = wl ]; then modprobe -r b43 b43legacy bcma ssb wl 2>/dev/null || true; fi
       swap_modules "$mode" || true
+      sleep 1
+      echo "Wi-Fi card driver now: $(card_driver)"
     fi ;;
   wl|b43)
     need_root; write_config "$1"; echo "$1" > "$STATE"; swap_modules "$1"; unpin_profiles
