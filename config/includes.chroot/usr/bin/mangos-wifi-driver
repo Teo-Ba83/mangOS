@@ -112,9 +112,24 @@ case "${1:-status}" in
     mode=$(cat "$STATE" 2>/dev/null || echo wl); check_mode "$mode"
     have=$(card_driver); want=$(wanted_driver "$mode")
     if [ -z "$have" ]; then
-      echo "Wi-Fi card has no driver; loading $mode"
-      if [ "$mode" = wl ]; then modprobe -r ssb bcma 2>/dev/null || true; fi
-      swap_modules "$mode" || true
+      # Seen on the MacBook with wl: loaded at boot but not bound to the card;
+      # unloading and loading it again binds it (it is already loaded, so a
+      # plain modprobe does nothing). Try a few times, a little later each time.
+      for wait in 1 3 6; do
+        echo "Wi-Fi card has no driver; (re)loading $mode"
+        if [ "$mode" = wl ]; then
+          modprobe -r wl 2>/dev/null || true
+          modprobe -r --ignore-install b43 b43legacy bcma ssb 2>/dev/null || true
+          sleep 1
+          modprobe wl || true
+        else
+          swap_modules b43 || true
+        fi
+        sleep "$wait"
+        have=$(card_driver)
+        [ -n "$have" ] && break
+      done
+      echo "Wi-Fi card driver now: ${have:-none}"
     elif [ "$have" != "$want" ]; then
       # wrong driver: make sure the next start uses the chosen one
       echo "Wi-Fi card uses '$have' instead of '$want'; fixed for the next start"
