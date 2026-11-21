@@ -65,6 +65,13 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   password again and saves a copy ("Name 1"). Use **Network** (logo menu,
   Settings or Launchpad) instead: it connects the saved profile, removes
   duplicates, and has Forget and Details (DHCP or manual IP).
+- **wl must win at boot.** On the MacBook4,1 b43's ssb (b43-pci-bridge)
+  could take the card before wl, dropping Wi-Fi to b43 speed. MangOS keeps
+  the Broadcom drivers out of the initramfs, reloads wl at boot if it did not
+  bind, never swaps drivers while one holds the card (that froze the Mac),
+  and ignores the live stick's `mangos.wifi=` option on an installed system.
+  After changing driver, shut down fully (not restart) and power on.
+  Verified: back to 82.9 down / 26.2 up with wl (21 Nov).
 - When `wl` loads, the kernel logs "Unpatched return thunk in use" with a
   warning trace: the closed-source part of the driver predates current CPU
   mitigations. It is harmless (Broadcom/Debian note to ignore it on older
