@@ -6,7 +6,8 @@ if [ "$1" = configure ]; then
   [ -e /etc/debian_chroot ] && exit 0
   /usr/lib/mangos/apply-system-config
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable mangos-updater.timer mangos-backup.timer >/dev/null 2>&1 || true
+  systemctl enable mangos-updater.timer mangos-backup.timer mangos-flathub.timer >/dev/null 2>&1 || true
+  systemctl start --no-block mangos-flathub.service >/dev/null 2>&1 || true
   update-initramfs -u >/dev/null 2>&1 || echo "mangos-system: update-initramfs failed" >&2
   if [ -e /boot/grub/grub.cfg ] && command -v update-grub >/dev/null; then
     update-grub >/dev/null 2>&1 || echo "mangos-system: update-grub failed" >&2

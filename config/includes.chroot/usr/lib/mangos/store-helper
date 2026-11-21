@@ -35,9 +35,12 @@ cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$cmd" in
   refresh)
     apt-get -q -o APT::Status-Fd=1 update
-    if have_flathub; then fp update --appstream flathub || true; fi ;;
+    if command -v flatpak >/dev/null; then
+      have_flathub || flatpak remote-add --system --if-not-exists flathub /usr/share/mangos/flathub.flatpakrepo || true
+      if have_flathub; then fp update --appstream flathub || true; fi
+    fi ;;
   flathub-setup)
-    flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+    flatpak remote-add --system --if-not-exists flathub /usr/share/mangos/flathub.flatpakrepo
     fp update --appstream flathub ;;
   flatpak-install)
     check_flatpak_id "${1:-}"

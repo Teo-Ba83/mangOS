@@ -30,7 +30,6 @@ SECTIONS = [
     ("play", "Play", "Gioca", "applications-games-symbolic", ["Game"]),
     ("develop", "Develop", "Sviluppa", "applications-engineering-symbolic", ["Development"]),
     ("utilities", "Utilities", "Utility", "applications-utilities-symbolic", ["Utility", "System", "Network"]),
-    ("flathub", "Flathub", "Flathub", "folder-download-symbolic", None),
     ("updates", "Updates", "Aggiornamenti", "software-update-available-symbolic", None),
 ]
 FLATHUB_REPO = "https://dl.flathub.org/repo/flathub.flatpakrepo"
@@ -129,6 +128,8 @@ CSS = b"""
 .store-info-sub { opacity: 0.5; font-size: 11px; }
 .store-fact { border-right: 1px solid alpha(currentColor, 0.12); padding: 0 22px; }
 .store-shot { border-radius: 10px; }
+.store-source { font-size: 12px; padding: 3px 12px; }
+.store-source:checked { background: #0A84FF; color: white; }
 .store-badge { font-size: 10px; font-weight: 800; color: #4A86E8; }
 .store-back { border: none; background: none; color: #0A84FF; font-weight: 600; box-shadow: none; }
 """
@@ -143,6 +144,22 @@ def markup_from_appstream(desc):
     text = re.sub(r"</p>\s*", "\n\n", text)
     text = re.sub(r"<[^>]+>", "", text)
     return html.escape(html.unescape(text).strip(), quote=False)
+
+
+PREFS = os.path.join(GLib.get_user_config_dir(), "mangos", "store.conf")
+
+
+def prefer_flathub():
+    try:
+        return "prefer=flathub" in open(PREFS).read()
+    except OSError:
+        return False
+
+
+def set_prefer_flathub(on):
+    os.makedirs(os.path.dirname(PREFS), exist_ok=True)
+    with open(PREFS, "w") as f:
+        f.write("prefer=flathub\n" if on else "prefer=debian\n")
 
 
 class Catalog:
@@ -182,11 +199,19 @@ class Catalog:
         ids = {c.get_id().removesuffix(".desktop") for c in apps}
         # the same app on Debian and on Flathub: Debian first, Flathub offered on its page
         self.flat_alt = {}
+        self.deb_alt = {}                                  # flatpak id -> the Debian version
+        by_name = {(c.get_name() or "").lower(): c for c in apps}
+        by_id = {c.get_id().removesuffix(".desktop"): c for c in apps}
         for fid, c in flat.items():
-            if fid in ids or (c.get_name() or "").lower() in names:
+            deb = by_id.get(fid) or by_name.get((c.get_name() or "").lower())
+            if deb is not None:
                 self.flat_alt[(c.get_name() or "").lower()] = c
                 self.flat_alt[fid] = c
+                self.deb_alt[fid] = deb
         self.flat_only = [c for fid, c in flat.items() if fid not in self.flat_alt]
+        # one catalog: every Debian app plus the apps only Flathub has
+        self.deb_apps = apps
+        self.apps = sorted(apps + self.flat_only, key=lambda c: (c.get_name() or "").lower())
         self.refresh_installed()
 
     def flathub_enabled(self):
@@ -199,10 +224,24 @@ class Catalog:
         return fid in self.flat_installed if fid else c.get_pkgname() in self.installed
 
     def alternative(self, c):
-        """The Flathub version of a Debian app, if there is one."""
-        if flatpak_id(c):
-            return None
+        """The same app from the other source (Debian <-> Flathub), if any."""
+        fid = flatpak_id(c)
+        if fid:
+            return self.deb_alt.get(fid)
         return self.flat_alt.get(c.get_id().removesuffix(".desktop")) or self.flat_alt.get((c.get_name() or "").lower())
+
+    def pick(self, c):
+        """The version to show: Debian (lighter) unless the user prefers the
+        newer Flathub versions; an installed version always wins."""
+        alt = self.alternative(c)
+        if alt is None:
+            return c
+        if self.is_installed(c):
+            return c
+        if self.is_installed(alt):
+            return alt
+        flat_first = prefer_flathub()
+        return (alt if flatpak_id(alt) else c) if flat_first else (c if not flatpak_id(c) else alt)
 
     def refresh_installed(self):
         out = subprocess.run(["dpkg-query", "-W", "-f=${Package} ${Status}\n"],
@@ -225,7 +264,7 @@ class Catalog:
 
     def search(self, text, limit=90):
         t = text.lower()
-        res = [c for c in self.apps + self.flat_only
+        res = [c for c in self.apps
                if t in (c.get_name() or "").lower() or t in (c.get_summary() or "").lower()
                or t in (c.get_pkgname() or flatpak_id(c) or "").lower()]
         res.sort(key=lambda c: (not (c.get_name() or "").lower().startswith(t), not self.icon_file(c, 64)))
@@ -531,6 +570,16 @@ class Store(Gtk.Window):
             row.add(b); self.menu.add(row)
         self.menu.connect("row-selected", self.on_section)
         side.pack_start(self.menu, False, False, 0)
+        # all Debian and Flathub apps are in one catalog; this picks the default
+        pref = Gtk.Box(spacing=8, margin=14, valign=Gtk.Align.END)
+        pl = Gtk.Label(label=tr("Prefer the newest versions (Flathub)", "Preferisci le versioni più recenti (Flathub)"),
+                       xalign=0, wrap=True, max_width_chars=18)
+        pl.get_style_context().add_class("store-dim")
+        ps = Gtk.Switch(active=prefer_flathub(), valign=Gtk.Align.CENTER)
+        ps.connect("notify::active", lambda w, _p: (set_prefer_flathub(w.get_active()),
+                                                    self.on_section(self.menu, self.menu.get_selected_row())))
+        pref.pack_start(pl, True, True, 0); pref.pack_end(ps, False, False, 0)
+        side.pack_end(pref, False, False, 0)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); root.pack_start(right, True, True, 0)
         self.progress = Gtk.ProgressBar(no_show_all=True); right.pack_start(self.progress, False, False, 0)
@@ -574,7 +623,7 @@ class Store(Gtk.Window):
                            min_children_per_line=1, max_children_per_line=3,
                            column_spacing=26, row_spacing=0)
         for i, c in enumerate(apps):
-            flow.add(self.app_row(c, i + 1 if ranked else None))
+            flow.add(self.app_row(self.cat.pick(c), i + 1 if ranked else None))
         return flow
 
     def app_row(self, c, rank=None):
@@ -630,8 +679,6 @@ class Store(Gtk.Window):
             self.show_discover()
         elif row.sid == "updates":
             self.show_updates()
-        elif row.sid == "flathub":
-            self.show_flathub()
         else:
             box = self.column(); self.header(box, tr(sec[1], sec[2]))
             if not self.cat.apps:
@@ -639,53 +686,6 @@ class Store(Gtk.Window):
             else:
                 box.pack_start(self.grid(self.cat.in_categories(sec[4], POPULAR.get(row.sid, ()))), False, False, 0)
             self.page(box, row.sid)
-
-    # ------------------------------------------------------------ Flathub
-    def show_flathub(self):
-        box = self.column()
-        self.header(box, "Flathub", tr("THOUSANDS MORE APPS, OFTEN NEWER VERSIONS", "MIGLIAIA DI APP IN PIÙ, SPESSO PIÙ RECENTI"))
-        if not shutil.which("flatpak"):
-            box.pack_start(Gtk.Label(label=tr("Flatpak is not installed.", "Flatpak non è installato."), xalign=0),
-                           False, False, 0)
-            self.page(box, "flathub"); return
-        if not self.cat.flathub_enabled() or not self.cat.flat:
-            intro = Gtk.Label(xalign=0, wrap=True, max_width_chars=80, label=tr(
-                "Flathub is the app store of the Linux world: Spotify, Discord, OBS, Telegram, Visual Studio Code "
-                "and thousands more, published by their developers. Apps run in a sandbox and update with "
-                "MangOS. The first app also downloads its runtime (a few hundred MB), later apps share it.",
-                "Flathub è lo store di app del mondo Linux: Spotify, Discord, OBS, Telegram, Visual Studio Code "
-                "e migliaia di altre, pubblicate dai loro sviluppatori. Le app girano in un ambiente protetto e "
-                "si aggiornano con MangOS. La prima app scarica anche il suo ambiente (qualche centinaio di MB), "
-                "le successive lo condividono."))
-            box.pack_start(intro, False, False, 0)
-            b = GetButton(None, "primary"); b.set_text(tr("Turn on Flathub", "Attiva Flathub"))
-            b.set_halign(Gtk.Align.START)
-            b.connect("clicked", lambda _b: self.run_helper(["flathub-setup"], self.after_refresh, button=_b))
-            box.pack_start(b, False, False, 6)
-            self.page(box, "flathub"); return
-        status = Gtk.Label(label=tr("Loading the most downloaded apps…", "Carico le app più scaricate…"), xalign=0)
-        status.get_style_context().add_class("store-dim")
-        t = Gtk.Label(label=tr("Most downloaded this month", "Le più scaricate del mese"), xalign=0, margin_top=6)
-        t.get_style_context().add_class("store-section")
-        box.pack_start(t, False, False, 0); box.pack_start(status, False, False, 0)
-        holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); box.pack_start(holder, False, False, 0)
-        self.page(box, "flathub")
-        token = object(); self.flathub_token = token
-
-        def work():
-            ids, live = flathub_popular()
-            GLib.idle_add(done, ids, live)
-
-        def done(ids, live):
-            if token is not self.flathub_token:
-                return False
-            apps = [self.cat.flat[i] for i in ids if i in self.cat.flat and i not in FLATHUB_SKIP][:30]
-            status.set_text(tr("Downloads in the last 30 days on Flathub.", "Download degli ultimi 30 giorni su Flathub.")
-                            if live else tr("Popular apps (Flathub statistics not reachable right now).",
-                                            "App popolari (statistiche di Flathub non raggiungibili ora)."))
-            holder.pack_start(self.grid(apps, ranked=True), False, False, 0); holder.show_all()
-            return False
-        threading.Thread(target=work, daemon=True).start()
 
     def show_discover(self):
         box = self.column()
@@ -696,6 +696,18 @@ class Store(Gtk.Window):
             self.empty_catalog(box); self.page(box, "discover"); return
         self.week_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.pack_start(self.week_box, False, False, 0)
+        if not self.cat.flat and shutil.which("flatpak"):
+            note = Gtk.Box(spacing=12, margin_top=8)
+            nl = Gtk.Label(xalign=0, wrap=True, label=tr(
+                "The Flathub apps (Spotify, Discord, OBS and thousands more) appear here once their catalog is downloaded.",
+                "Le app di Flathub (Spotify, Discord, OBS e migliaia di altre) compaiono qui appena ne scarichi il catalogo."))
+            nl.get_style_context().add_class("store-dim")
+            nb = GetButton(None, "primary"); nb.set_text(tr("Download", "Scarica"))
+            nb.connect("clicked", lambda _b: self.run_helper(["refresh"], self.after_refresh, button=_b))
+            note.pack_start(nl, True, True, 0); note.pack_end(nb, False, False, 0)
+            box.pack_start(note, False, False, 0)
+        self.flat_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.pack_start(self.flat_box, False, False, 0)
         for key, en, it in (("essentials", "Essential apps", "App essenziali"), ("play", "Games to try", "Giochi da provare")):
             apps = [self.cat.by_pkg[p] for p in FEATURED[key] if p in self.cat.by_pkg]
             if not apps:
@@ -710,6 +722,9 @@ class Store(Gtk.Window):
         def work():
             names, _src = popcon_names()
             GLib.idle_add(self.show_week, weekly_picks(self.cat, names), bool(names), token)
+            if self.cat.flat:
+                ids, live = flathub_popular()
+                GLib.idle_add(self.show_flat_top, ids, live, token)
         threading.Thread(target=work, daemon=True).start()
 
     # ---- sliding banner: ArtCraft + the apps of the week
@@ -817,6 +832,27 @@ class Store(Gtk.Window):
             a.x = a.y = 0
         return ox + a.x <= px < ox + a.x + a.width and oy + a.y <= py < oy + a.y + a.height
 
+    def show_flat_top(self, ids, live, token):
+        if token is not getattr(self, "week_token", None) or self.flat_box.get_toplevel() is not self:
+            return False
+        apps = [self.cat.flat[i] for i in ids if i in self.cat.flat and i not in FLATHUB_SKIP][:9]
+        if not apps:
+            return False
+        t = Gtk.Label(label=tr("Most downloaded this month", "Le più scaricate del mese"), xalign=0, margin_top=14)
+        t.get_style_context().add_class("store-section")
+        sub = Gtk.Label(xalign=0, label=tr("Downloads in the last 30 days on Flathub.",
+                                           "Download degli ultimi 30 giorni su Flathub.") if live else
+                        tr("Popular on Flathub.", "Popolari su Flathub."))
+        sub.get_style_context().add_class("store-dim")
+        self.flat_box.pack_start(t, False, False, 0); self.flat_box.pack_start(sub, False, False, 0)
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=1,
+                           max_children_per_line=3, column_spacing=26, row_spacing=0)
+        for i, c in enumerate(apps):          # Flathub's numbers: its versions, unless Debian's is installed
+            alt = self.cat.alternative(c)
+            flow.add(self.app_row(alt if alt is not None and self.cat.is_installed(alt) else c, i + 1))
+        self.flat_box.pack_start(flow, False, False, 0); self.flat_box.show_all()
+        return False
+
     def show_week(self, picks, from_popcon, token=None):
         if token is not getattr(self, "week_token", None):
             return False
@@ -895,11 +931,23 @@ class Store(Gtk.Window):
                             "Da Debian · controllata e aggiornata da Debian"))
         info.pack_start(src, False, False, 0)
         if alt is not None:
-            ab = Gtk.Button(label=tr("Also on Flathub (often a newer version) ›",
-                                     "Disponibile anche su Flathub (spesso più recente) ›"), halign=Gtk.Align.START)
-            ab.get_style_context().add_class("store-back")
-            ab.connect("clicked", lambda *_: self.show_app(alt))
-            info.pack_start(ab, False, False, 0)
+            # same app from both sources: a switch, like a Mac app with two versions
+            sw = Gtk.Box(halign=Gtk.Align.START, margin_top=6)
+            sw.get_style_context().add_class("linked")
+            deb, flat = (alt, c) if fid else (c, alt)
+            for comp, label in ((deb, tr("Debian (lighter)", "Debian (più leggera)")),
+                                (flat, tr("Flathub (newer)", "Flathub (più recente)"))):
+                b = Gtk.ToggleButton(label=label, active=comp is c)
+                b.get_style_context().add_class("store-source")
+                if comp is not c:
+                    b.connect("toggled", lambda _b, other=comp: self.show_app(other))
+                else:
+                    b.connect("toggled", lambda _b: _b.set_active(True))
+                sw.pack_start(b, False, False, 0)
+            lab = Gtk.Label(label=tr("Source", "Fonte"), xalign=0, margin_top=8)
+            lab.get_style_context().add_class("store-info-key")
+            info.pack_start(lab, False, False, 0)
+            info.pack_start(sw, False, False, 0)
         top.pack_start(info, True, True, 0)
 
         facts = Gtk.Box(spacing=0, margin_top=8)

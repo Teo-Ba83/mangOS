@@ -1,0 +1,10 @@
+[Unit]
+Description=MangOS: refresh the Flathub catalog for the Mango Store
+ConditionKernelCommandLine=!boot=live
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Nice=15
+ExecStart=/bin/sh -c 'flatpak remotes --system --columns=name | grep -qx flathub && flatpak update --appstream --system flathub || true'

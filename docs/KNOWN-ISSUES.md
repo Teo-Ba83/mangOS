@@ -145,18 +145,21 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 ## Flathub
 
-- The **Flathub** section of the Mango Store adds thousands of apps (Spotify,
-  Discord, OBS, Telegram, VS Code...). It is turned on with one button: that
-  adds the Flathub repository and downloads its catalog (about 100 MB of
-  data and icons). The first Flathub app also downloads its runtime (a few
-  hundred MB); later apps share it.
-- "Most downloaded this month" uses Flathub's own download statistics;
-  LibreOffice and games or launchers that need Vulkan / OpenGL 3+ are left
-  out, because this Mac's graphics cannot run them.
-- Flathub apps run in a sandbox; many are built with Electron and use
-  software rendering on the GMA X3100 (they work, but are heavier).
-- When an app is both in Debian and on Flathub, the Store shows the Debian
-  one and offers the Flathub one on its page.
+- The Mango Store is **one catalog**: every Debian app plus the apps only
+  Flathub has (about 4,600 in all, e.g. Spotify, Discord, OBS, VS Code), in
+  the same sections and search. Flathub is added automatically (from a repo
+  file shipped with MangOS); its catalog (about 100 MB of data and icons) is
+  downloaded in the background after the update, then refreshed daily.
+- When an app exists in both, the Store shows the Debian version (lighter,
+  shares the system's libraries) and its page has a **Source** switch:
+  Debian (lighter) / Flathub (newer). "Prefer the newest versions
+  (Flathub)" at the bottom of the sidebar makes Flathub the default.
+- "Most downloaded this month" on Discover uses Flathub's own download
+  statistics; LibreOffice and games or launchers that need Vulkan / OpenGL
+  3+ are left out, because this Mac's graphics cannot run them.
+- The first Flathub app also downloads its runtime (a few hundred MB);
+  later apps share it. Flathub apps run in a sandbox; many are built with
+  Electron and use software rendering on the GMA X3100.
 
 ## Backups
 
