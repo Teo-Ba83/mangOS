@@ -101,6 +101,12 @@ case "${1:-status}" in
   --boot)
     # Called by mangos-wifi-driver.service: honour mangos.wifi= on the kernel command line.
     mode=$(sed -n 's/.*mangos\.wifi=\([a-z0-9]*\).*/\1/p' /proc/cmdline)
+    # The boot option is for the live USB stick. On an installed system the
+    # choice saved with 'mangos-wifi-driver wl|b43' wins (seen on the MacBook:
+    # mangos.wifi=b43 carried over by the installer forced b43 at every start).
+    if [ -n "$mode" ] && ! grep -qw boot=live /proc/cmdline && [ -e "$STATE" ]; then
+      echo "ignoring mangos.wifi=$mode: the saved choice is $(cat "$STATE")"; mode=""
+    fi
     if [ -n "$mode" ]; then
       check_mode "$mode"; swap_modules "$mode"; echo "Wi-Fi driver for this boot (mangos.wifi): $mode"; exit 0
     fi

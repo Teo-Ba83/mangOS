@@ -161,6 +161,19 @@ GRUB_GFXMODE=auto
 G
 grep -q '^i915' /etc/initramfs-tools/modules || echo i915 >> /etc/initramfs-tools/modules
 
+# The live stick's 'mangos.wifi=' boot option must not stay in the installed
+# system's boot configuration (it would override the saved Wi-Fi driver).
+if ! $BUILD; then
+  for g in /etc/default/grub /etc/default/grub.d/*.cfg; do
+    [ -f "$g" ] && grep -q 'mangos\.wifi=' "$g" || continue
+    sed -i 's/ *mangos\.wifi=[a-z0-9]*//g' "$g"
+    touch /run/mangos-grub-changed
+  done
+  if [ -e /run/mangos-grub-changed ] && command -v update-grub >/dev/null; then
+    update-grub >/dev/null 2>&1 || true
+  fi
+fi
+
 # Flathub is part of the Mango Store: add it (offline, from the shipped repo
 # file with its signing key); its catalog is downloaded by mangos-flathub.timer.
 if command -v flatpak >/dev/null && [ -r /usr/share/mangos/flathub.flatpakrepo ]; then
