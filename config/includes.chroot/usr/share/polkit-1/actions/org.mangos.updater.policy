@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <action id="org.mangos.updater">
+    <description>Change the update channel or go back to the previous MangOS version</description>
+    <description xml:lang="it">Cambia il canale degli aggiornamenti o torna alla versione precedente di MangOS</description>
+    <message>Authentication is required to change MangOS updates</message>
+    <message xml:lang="it">È richiesta l'autenticazione per modificare gli aggiornamenti di MangOS</message>
+    <icon_name>system-software-update</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/mangos/mangos-updater</annotate>
+  </action>
+</policyconfig>

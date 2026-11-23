@@ -120,9 +120,20 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 ## Updates
 
-- Web updates need the public repository `Teo-Ba83/mangos-updates` and the
-  `MANGOS_UPDATES_TOKEN` secret (see `docs/UPDATES.md`). Systems installed
-  from ISOs older than build #6 have no updater and must be reinstalled once.
+- **Two channels.** Every build is published as a *beta*; only builds
+  promoted to *stable* reach everyone. Settings > Software Update has
+  "Receive beta versions". A build is promoted by changing the number in
+  `channels/stable-build` (or from Actions > "Promote a build to stable");
+  its already-signed files become the stable release, nothing is rebuilt.
+  Only the 6 newest builds (and the stable one) are kept.
+- **Going back is the user's choice.** Software Update > "Go Back to the
+  Previous Version" reinstalls the version you had before (kept on the disk,
+  signed; downloaded again if needed); the version left is then skipped
+  until a newer one is published. There is no automatic rollback. "Restore a
+  Backup…" brings back the whole system (Debian updates included).
+- Going back becomes available after the first update installed with this
+  updater (0.2.0); the version before it can still be downloaded while its
+  build is kept.
 - Updates change the system defaults; settings a user already changed
   (theme, dock, panel) stay as the user set them.
 - Removing a program from the package list does not uninstall it from

@@ -2,22 +2,54 @@
 # MangOS updater: installs new versions of the mangos-system package
 # published by the MangOS build on GitHub.
 #
-#   mangos-updater check     tell whether an update is available (any user)
-#   mangos-updater install   download, verify and install it (root)
+#   mangos-updater check           tell whether an update is available (any user)
+#   mangos-updater install         download, verify and install it (root)
+#   mangos-updater auto            same, from the timer (honours MANGOS_AUTO_UPDATE)
+#   mangos-updater status          channel, installed, previous and skipped versions
+#   mangos-updater channel stable|beta   choose the update channel (root)
+#   mangos-updater rollback        go back to the version installed before (root)
 #
-# Every update is verified with cosign: the package must carry a Sigstore
-# signature made by the MangOS GitHub Actions workflow (identity and issuer
-# in /etc/mangos/updates.conf). Unsigned or foreign packages are refused.
-# MANGOS_UPDATES_URL in the environment overrides the download location
-# (used by the build's self-test); the signature check still applies.
+# Channels: "stable" gets only the builds promoted to stable; "beta" gets
+# every build. The choice is in /etc/mangos/update-channel (default stable).
+# Every package is verified with cosign: it must carry a Sigstore signature
+# made by the MangOS GitHub Actions workflow (identity and issuer in
+# /etc/mangos/updates.conf). Unsigned or foreign packages are refused.
+# Going back is only ever done when the user asks (Settings > Software
+# Update); the version left is then skipped until a newer one is published.
+# MANGOS_UPDATES_URL_OVERRIDE overrides the download location (used by the
+# build's self-test); the signature check still applies.
 set -eu
 CONF=/etc/mangos/updates.conf
 [ -r "$CONF" ] && . "$CONF"
-URL=${MANGOS_UPDATES_URL_OVERRIDE:-${MANGOS_UPDATES_URL:-}}
-[ -n "$URL" ] || { echo "mangos-updater: no update location configured" >&2; exit 1; }
-MODE=${1:-check}
+CHANNEL_FILE=/etc/mangos/update-channel
 STATE=/var/lib/mangos/updater
+KEEP=$STATE/packages
+MODE=${1:-check}
 log() { echo "mangos-updater: $*"; }
+
+channel() { c=$(cat "$CHANNEL_FILE" 2>/dev/null || true); [ "$c" = beta ] && echo beta || echo stable; }
+installed() { dpkg-query -W -f='${Version}' mangos-system 2>/dev/null || echo 0; }
+previous() { cat "$STATE/previous" 2>/dev/null || true; }
+skipped() { cat "$STATE/skip" 2>/dev/null || true; }
+need_root() { [ "$(id -u)" = 0 ] || { log "this needs root"; exit 1; }; }
+
+case "$MODE" in
+  status)
+    echo "channel=$(channel)"; echo "installed=$(installed)"
+    echo "previous=$(previous)"; echo "skipped=$(skipped)"; exit 0 ;;
+  channel)
+    need_root
+    case "${2:-}" in stable|beta) ;; *) log "usage: mangos-updater channel stable|beta"; exit 2;; esac
+    mkdir -p "$(dirname "$CHANNEL_FILE")"; echo "$2" > "$CHANNEL_FILE"
+    log "update channel: $2"; exit 0 ;;
+esac
+
+if [ "$(channel)" = beta ] && [ -n "${MANGOS_UPDATES_BETA_URL:-}" ]; then
+  URL=${MANGOS_UPDATES_URL_OVERRIDE:-$MANGOS_UPDATES_BETA_URL}
+else
+  URL=${MANGOS_UPDATES_URL_OVERRIDE:-${MANGOS_UPDATES_URL:-}}
+fi
+[ -n "$URL" ] || { log "no update location configured" >&2; exit 1; }
 
 if grep -qw boot=live /proc/cmdline 2>/dev/null && [ -z "${MANGOS_UPDATES_URL_OVERRIDE:-}" ]; then
   log "live session, nothing to update"; exit 0
@@ -29,23 +61,90 @@ fi
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fetch() { curl -fsSL --retry 3 --connect-timeout 20 -o "$TMP/$1" "$URL/$1"; }
 
+verify() { # deb bundle
+  cosign verify-blob --bundle "$2" \
+    --certificate-identity-regexp "$MANGOS_SIGNER_IDENTITY_REGEX" \
+    --certificate-oidc-issuer "$MANGOS_SIGNER_ISSUER" "$1" >"$TMP/cosign.log" 2>&1
+}
+
+keep_package() { # deb bundle version: keep verified packages to go back to (last 3)
+  mkdir -p "$KEEP"; chmod 700 "$KEEP"
+  cp "$1" "$KEEP/$3.deb"; cp "$2" "$KEEP/$3.deb.sigstore.json"
+  ls -1t "$KEEP"/*.deb 2>/dev/null | tail -n +4 | while read -r old; do
+    rm -f "$old" "$old.sigstore.json"
+  done
+}
+
+apt_install() { # deb [extra apt options]
+  deb=$1; shift
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -q >/dev/null || true
+  apt-get install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" "$deb"
+}
+
+notify() { # english-title english-body italian-title italian-body
+  for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '$1 >= 1000 {print $1}'); do
+    user=$(id -nu "$uid" 2>/dev/null) || continue
+    lang=$(sed -n 's/^export LANG=//p' "$(getent passwd "$user" | cut -d: -f6)/.xsessionrc" 2>/dev/null | tail -1)
+    [ -n "$lang" ] || lang=$(sed -n 's/^LANG=//p' /etc/default/locale 2>/dev/null | tr -d '"')
+    case "$lang" in it*) t=$3; b=$4 ;; *) t=$1; b=$2 ;; esac
+    runuser -u "$user" -- env DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+      notify-send -a MangOS -i mangos-logo "$t" "$b" 2>/dev/null || true
+  done
+}
+
+# ------------------------------------------------------------ going back
+if [ "$MODE" = rollback ]; then
+  need_root
+  PREV=$(previous); CUR=$(installed)
+  [ -n "$PREV" ] || { log "no previous version recorded"; exit 4; }
+  deb=$KEEP/$PREV.deb; bundle=$KEEP/$PREV.deb.sigstore.json
+  if [ ! -s "$deb" ] || [ ! -s "$bundle" ]; then
+    # not kept locally (installed before this feature): its build's release
+    base=${PREV%%+*}; build=${PREV#*+}
+    tag="v$base-${build}"
+    log "downloading $PREV ($tag)"
+    curl -fsSL --retry 3 -o "$TMP/prev.deb" "$MANGOS_RELEASES_URL/$tag/mangos-system.deb" &&
+      curl -fsSL --retry 3 -o "$TMP/prev.deb.sigstore.json" "$MANGOS_RELEASES_URL/$tag/mangos-system.deb.sigstore.json" ||
+      { log "the previous version is not available any more"; exit 2; }
+    deb=$TMP/prev.deb; bundle=$TMP/prev.deb.sigstore.json
+    verify "$deb" "$bundle" || { log "SIGNATURE CHECK FAILED, refused"; cat "$TMP/cosign.log" >&2; exit 3; }
+  elif ! verify "$deb" "$bundle"; then
+    # kept packages were verified when installed and live in a root-only
+    # directory; without network cosign may not reach Sigstore: accept them
+    grep -qi "signature\|certificate\|identity" "$TMP/cosign.log" &&
+      { log "SIGNATURE CHECK FAILED, refused"; cat "$TMP/cosign.log" >&2; exit 3; }
+    log "offline: using the package verified when it was installed"
+  fi
+  [ "$(dpkg-deb -f "$deb" Version)" = "$PREV" ] || { log "package does not match $PREV, refused"; exit 3; }
+  [ "${MANGOS_UPDATER_DRY_RUN:-}" = 1 ] && { log "dry run: would go back to $PREV"; exit 0; }
+  apt_install "$deb" --allow-downgrades
+  mkdir -p "$STATE"
+  echo "$CUR" > "$STATE/skip"           # do not reinstall the version left behind
+  rm -f "$STATE/previous"               # one step back; the next update records a new one
+  echo "$PREV $(date -Is) rollback-from $CUR" >> "$STATE/history"
+  log "went back to MangOS $PREV (skipping $CUR until a newer version)"
+  exit 0
+fi
+
+# ------------------------------------------------------------ updating
 fetch mangos-system.version || { log "cannot reach $URL"; exit 2; }
 NEW=$(head -c 80 "$TMP/mangos-system.version" | tr -cd '0-9A-Za-z.+~-')
-CUR=$(dpkg-query -W -f='${Version}' mangos-system 2>/dev/null || echo 0)
+CUR=$(installed)
 if ! dpkg --compare-versions "$NEW" gt "$CUR"; then
-  log "up to date ($CUR)"; exit 0
+  log "up to date ($CUR, channel $(channel))"; exit 0
 fi
-log "update available: $CUR -> $NEW"
+if [ "$NEW" = "$(skipped)" ]; then
+  log "$NEW was rolled back by the user; waiting for a newer version"; exit 0
+fi
+log "update available: $CUR -> $NEW (channel $(channel))"
 [ "$MODE" = check ] && exit 10
 [ "$MODE" = auto ] && MODE=install
 
-[ "$(id -u)" = 0 ] || { log "installing needs root"; exit 1; }
+need_root
 fetch mangos-system.deb
 fetch mangos-system.deb.sigstore.json
-if ! cosign verify-blob --bundle "$TMP/mangos-system.deb.sigstore.json" \
-      --certificate-identity-regexp "$MANGOS_SIGNER_IDENTITY_REGEX" \
-      --certificate-oidc-issuer "$MANGOS_SIGNER_ISSUER" \
-      "$TMP/mangos-system.deb" >"$TMP/cosign.log" 2>&1; then
+if ! verify "$TMP/mangos-system.deb" "$TMP/mangos-system.deb.sigstore.json"; then
   log "SIGNATURE CHECK FAILED, update refused"; cat "$TMP/cosign.log" >&2; exit 3
 fi
 log "signature OK"
@@ -57,22 +156,12 @@ fi
 # Time Machine-style: snapshot the system first (if enabled; never blocks the update)
 [ -x /usr/lib/mangos/backup-helper ] && /usr/lib/mangos/backup-helper before-update "MangOS $VER" >/dev/null 2>&1 || true
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -q >/dev/null || true
-apt-get install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-  "$TMP/mangos-system.deb"
-mkdir -p "$STATE"; echo "$VER $(date -Is)" >> "$STATE/history"
+apt_install "$TMP/mangos-system.deb"
+mkdir -p "$STATE"
+[ "$CUR" != 0 ] && echo "$CUR" > "$STATE/previous"
+rm -f "$STATE/skip"
+keep_package "$TMP/mangos-system.deb" "$TMP/mangos-system.deb.sigstore.json" "$VER"
+echo "$VER $(date -Is)" >> "$STATE/history"
 log "installed MangOS $VER"
-
-# Tell the people who are logged in.
-for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '$1 >= 1000 {print $1}'); do
-  user=$(id -nu "$uid" 2>/dev/null) || continue
-  lang=$(sed -n 's/^export LANG=//p' "$(getent passwd "$user" | cut -d: -f6)/.xsessionrc" 2>/dev/null | tail -1)
-  [ -n "$lang" ] || lang=$(sed -n 's/^LANG=//p' /etc/default/locale 2>/dev/null | tr -d '"')
-  case "$lang" in
-    it*) t="MangOS è stato aggiornato"; b="Versione ${VER}. Alcune modifiche saranno visibili dopo il riavvio." ;;
-    *)   t="MangOS was updated"; b="Version ${VER}. Some changes appear after a restart." ;;
-  esac
-  runuser -u "$user" -- env DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-    notify-send -a MangOS -i mangos-logo "$t" "$b" 2>/dev/null || true
-done
+notify "MangOS was updated" "Version ${VER}. Some changes appear after a restart." \
+       "MangOS è stato aggiornato" "Versione ${VER}. Alcune modifiche saranno visibili dopo il riavvio."

@@ -21,7 +21,13 @@ rm -f "$STAGE"/usr/lib/mangos/calamares-*
 mkdir -p "$STAGE/etc/mangos"
 cat > "$STAGE/etc/mangos/updates.conf" <<CONF
 # MangOS web updates (managed by the mangos-system package).
+# Stable channel: the release marked "latest" (only builds promoted to stable).
 MANGOS_UPDATES_URL=https://github.com/$MANGOS_UPDATES_REPO/releases/latest/download
+# Beta channel: every build (rolling "beta" release). Chosen per computer in
+# /etc/mangos/update-channel (Settings > Software Update).
+MANGOS_UPDATES_BETA_URL=https://github.com/$MANGOS_UPDATES_REPO/releases/download/beta
+# Each build's own release (tag v<version>-build.<n>), for going back one version.
+MANGOS_RELEASES_URL=https://github.com/$MANGOS_UPDATES_REPO/releases/download
 # Only packages signed by this GitHub Actions workflow are installed.
 MANGOS_SIGNER_IDENTITY_REGEX='^https://github\\.com/$MANGOS_SOURCE_REPO/\\.github/workflows/build-iso\\.yml@refs/heads/'
 MANGOS_SIGNER_ISSUER=https://token.actions.githubusercontent.com

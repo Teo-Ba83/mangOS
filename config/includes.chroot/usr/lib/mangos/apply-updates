@@ -12,6 +12,9 @@ case $? in
 esac
 [ -x /usr/lib/mangos/backup-helper ] && /usr/lib/mangos/backup-helper before-update "Debian updates" >/dev/null 2>&1 || true
 if apt-get update -q && apt-get -y -q -o Dpkg::Options::=--force-confold full-upgrade; then d=ok; else d=failed; fi
+if command -v flatpak >/dev/null && flatpak remotes --system --columns=name | grep -qx flathub; then
+  flatpak update --system -y --noninteractive >/dev/null 2>&1 || true
+fi
 echo "mangos=$m debian=$d" > /run/mangos-update.status
 [ "$d" = ok ] && touch /run/mangos-update.ok
 exit 0

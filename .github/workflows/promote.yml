@@ -1,0 +1,48 @@
+# Promotes one build to the stable channel: its release in the public updates
+# repository becomes the release marked "latest", which installed MangOS
+# systems on the stable channel update from (and where the ISO for new
+# installations is downloaded). Nothing is rebuilt: the files are the ones
+# the build workflow signed, so their Sigstore signatures stay valid.
+# Triggered by a change of channels/stable-build, or from the Actions tab.
+name: Promote a build to stable
+
+on:
+  # Change the number in channels/stable-build (also from GitHub's web editor)...
+  push:
+    branches: [main, master, "ccr-*"]
+    paths: ["channels/stable-build"]
+  # ...or run it from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Build number to make stable (e.g. 36)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Promote
+        env:
+          GH_TOKEN: ${{ secrets.MANGOS_UPDATES_TOKEN }}
+          BUILD: ${{ inputs.build }}
+        run: |
+          set -eu
+          [ -n "$BUILD" ] || BUILD=$(tr -cd '0-9' < channels/stable-build)
+          case "$BUILD" in ''|*[!0-9]*) echo "::error::build must be a number"; exit 1;; esac
+          . scripts/versions.env
+          REPO=$MANGOS_UPDATES_REPO
+          tag=$(gh release list -R "$REPO" --limit 200 --json tagName --jq '.[].tagName' | grep -E -- "-build\.$BUILD\$" | head -1)
+          [ -n "$tag" ] || { echo "::error::no release for build $BUILD in $REPO (only the newest builds are kept)"; exit 1; }
+          gh release view "$tag" -R "$REPO" --json assets --jq '.assets[].name' > assets.txt
+          for f in mangos-system.deb mangos-system.deb.sigstore.json mangos-system.version; do
+            grep -qx "$f" assets.txt || { echo "::error::$tag has no $f"; exit 1; }
+          done
+          gh release edit "$tag" -R "$REPO" --prerelease=false --latest --title "MangOS $tag (stable)"
+          echo "Build $BUILD ($tag) is now the stable version."
+          gh release view -R "$REPO" --json tagName,name --jq '"latest: \(.tagName) \(.name)"'

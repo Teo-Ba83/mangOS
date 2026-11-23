@@ -1,23 +1,223 @@
-#!/bin/sh
-# Software Update: MangOS updates (signed) and Debian updates, with a clear result.
-case "$LANG" in
-  it*) t="Aggiornamento software"; w="Ricerca e installazione degli aggiornamenti…"
-       up="MangOS è stato aggiornato."; cur="MangOS è aggiornato."
-       unr="Non riesco a raggiungere il server degli aggiornamenti di MangOS (non ancora configurato o connessione assente)."
-       ref="Un aggiornamento di MangOS è stato RIFIUTATO perché la firma non è valida."
-       dok="Gli aggiornamenti di Debian sono installati."; dko="Gli aggiornamenti di Debian non sono riusciti: controlla la connessione." ;;
-  *)   t="Software Update"; w="Checking for and installing updates…"
-       up="MangOS was updated."; cur="MangOS is up to date."
-       unr="Cannot reach the MangOS update server (not set up yet, or no connection)."
-       ref="A MangOS update was REFUSED because its signature is not valid."
-       dok="Debian updates are installed."; dko="Debian updates failed: check your internet connection." ;;
-esac
-pkexec /usr/lib/mangos/apply-updates | zenity --progress --pulsate --auto-close --no-cancel \
-  --title="$t" --text="$w" --width=380
-st=$(cat /run/mangos-update.status 2>/dev/null)
-case "$st" in *mangos=updated*) a=$up;; *mangos=current*) a=$cur;; *mangos=unreachable*) a=$unr;; *mangos=refused*) a=$ref;; *) a=$unr;; esac
-case "$st" in *debian=ok*) b=$dok;; *) b=$dko;; esac
-case "$st" in
-  *mangos=updated*debian=ok*|*mangos=current*debian=ok*) zenity --info --title="$t" --text="$a\n$b" --width=380 ;;
-  *) zenity --warning --title="$t" --text="$a\n$b" --width=380 ;;
-esac
+#!/usr/bin/python3
+"""MangOS Software Update.
+
+Installed version and channel, "Check and install updates" (MangOS, Debian,
+Flathub), "Receive beta versions", and "Go back to the previous version"
+(only when the user asks: the version left is skipped until a newer one is
+published), plus a link to the Backup panel for a full restore."""
+import os, subprocess, threading
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk
+from mangos import tr, load_css
+
+UPDATER = "/usr/lib/mangos/mangos-updater"
+CSS = b"""
+.su-title { font-size: 24px; font-weight: 800; }
+.su-card { border-radius: 12px; border: 1px solid alpha(currentColor, .13); padding: 14px 16px;
+           background: alpha(currentColor, .03); }
+.su-big { font-size: 16px; font-weight: 700; }
+.su-dim { opacity: .62; font-size: 12px; }
+.su-beta { font-size: 10px; font-weight: 800; color: white; background: #FF9F0A; border-radius: 6px; padding: 1px 7px; }
+"""
+
+
+def nice(v):
+    """0.2.0+build.36 -> 0.2.0 (build 36)"""
+    if not v or v == "0":
+        return "—"
+    base, _, build = v.partition("+")
+    return f"{base} ({build.replace('build.', 'build ')})" if build else base
+
+
+def status():
+    out = subprocess.run([UPDATER, "status"], capture_output=True, text=True).stdout
+    return dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+
+
+class Update(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=tr("Software Update", "Aggiornamento software"))
+        self.set_default_size(560, -1)
+        self.set_icon_name("system-software-update")
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_resizable(False)
+        self.busy = False
+        self.updating = False
+        hb = Gtk.HeaderBar(show_close_button=True, title=tr("Software Update", "Aggiornamento software"))
+        self.spinner = Gtk.Spinner(); hb.pack_end(self.spinner)
+        self.set_titlebar(hb)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        self.add(self.box)
+        self.build()
+
+    def build(self):
+        for c in self.box.get_children():
+            c.destroy()
+        st = status()
+        beta = st.get("channel") == "beta"
+
+        top = Gtk.Box(spacing=14)
+        img = Gtk.Image.new_from_icon_name("mangos-logo", Gtk.IconSize.DIALOG); img.set_pixel_size(64)
+        top.pack_start(img, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, spacing=2)
+        row = Gtk.Box(spacing=8)
+        t = Gtk.Label(label="MangOS " + nice(st.get("installed")), xalign=0)
+        t.get_style_context().add_class("su-title")
+        row.pack_start(t, False, False, 0)
+        if beta:
+            b = Gtk.Label(label="BETA", valign=Gtk.Align.CENTER); b.get_style_context().add_class("su-beta")
+            row.pack_start(b, False, False, 0)
+        tb.pack_start(row, False, False, 0)
+        self.result = Gtk.Label(xalign=0, wrap=True, max_width_chars=55)
+        self.result.get_style_context().add_class("su-dim")
+        self.result.set_text(tr("Updates are signed: only builds made by MangOS are installed.",
+                                "Gli aggiornamenti sono firmati: si installano solo le build fatte da MangOS."))
+        tb.pack_start(self.result, False, False, 0)
+        top.pack_start(tb, True, True, 0)
+        self.box.pack_start(top, False, False, 0)
+
+        chk = Gtk.Button(label=tr("Check and Install Updates", "Controlla e installa aggiornamenti"),
+                         halign=Gtk.Align.START)
+        chk.get_style_context().add_class("suggested-action")
+        chk.connect("clicked", lambda *_: self.check())
+        self.box.pack_start(chk, False, False, 0)
+
+        # channel
+        card = Gtk.Box(spacing=12); card.get_style_context().add_class("su-card")
+        lb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        a = Gtk.Label(label=tr("Receive beta versions", "Ricevi le versioni beta"), xalign=0)
+        a.get_style_context().add_class("su-big")
+        s = Gtk.Label(xalign=0, wrap=True, max_width_chars=48, label=tr(
+            "Every new build, before everyone else. They may have problems: you can always go back.",
+            "Ogni nuova build, prima di tutti. Possono avere problemi: puoi sempre tornare indietro."))
+        s.get_style_context().add_class("su-dim")
+        lb.pack_start(a, False, False, 0); lb.pack_start(s, False, False, 0)
+        card.pack_start(lb, True, True, 0)
+        sw = Gtk.Switch(active=beta, valign=Gtk.Align.CENTER)
+        sw.connect("notify::active", lambda w, _p: None if self.updating else
+                   self.root(["channel", "beta" if w.get_active() else "stable"],
+                             tr("Changing channel…", "Cambio canale…"), self.after_channel))
+        card.pack_end(sw, False, False, 0)
+        self.box.pack_start(card, False, False, 0)
+
+        # going back
+        back = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6); back.get_style_context().add_class("su-card")
+        h = Gtk.Label(label=tr("Problems after an update?", "Problemi dopo un aggiornamento?"), xalign=0)
+        h.get_style_context().add_class("su-big")
+        back.pack_start(h, False, False, 0)
+        prev, skip = st.get("previous", ""), st.get("skipped", "")
+        if prev:
+            d = Gtk.Label(xalign=0, wrap=True, max_width_chars=55, label=tr(
+                f"Go back to MangOS {nice(prev)}, the version you had before. It is installed again in a few "
+                "seconds; the current version is skipped until a newer one comes out.",
+                f"Torna a MangOS {nice(prev)}, la versione che avevi prima. Si reinstalla in pochi secondi; "
+                "quella attuale viene saltata finché non ne esce una più nuova."))
+            d.get_style_context().add_class("su-dim"); back.pack_start(d, False, False, 0)
+            rb = Gtk.Button(label=tr("Go Back to the Previous Version", "Torna alla versione precedente"),
+                            halign=Gtk.Align.START)
+            rb.connect("clicked", lambda *_: self.rollback(prev))
+            back.pack_start(rb, False, False, 0)
+        else:
+            d = Gtk.Label(xalign=0, wrap=True, max_width_chars=55, label=tr(
+                "Going back to the previous version becomes available after the next MangOS update.",
+                "Il ritorno alla versione precedente sarà disponibile dopo il prossimo aggiornamento di MangOS."))
+            d.get_style_context().add_class("su-dim"); back.pack_start(d, False, False, 0)
+        if skip:
+            k = Gtk.Label(xalign=0, wrap=True, max_width_chars=55, label=tr(
+                f"Version {nice(skip)} is skipped: it is not installed again until a newer one comes out.",
+                f"La versione {nice(skip)} è esclusa: non verrà reinstallata finché non ne esce una più nuova."))
+            k.get_style_context().add_class("su-dim"); back.pack_start(k, False, False, 0)
+        bk = Gtk.Button(label=tr("Restore a Backup…", "Ripristina un backup…"), halign=Gtk.Align.START)
+        bk.set_tooltip_text(tr("Brings back the whole system, Debian updates included",
+                               "Riporta indietro tutto il sistema, aggiornamenti di Debian compresi"))
+        bk.connect("clicked", lambda *_: subprocess.Popen(["mangos-backup"]))
+        back.pack_start(bk, False, False, 0)
+        self.box.pack_start(back, False, False, 0)
+        self.box.show_all()
+
+    # ---- actions
+    def run(self, cmd, label, done):
+        if self.busy:
+            return
+        self.busy = True
+        self.spinner.start(); self.result.set_text(label); self.box.set_sensitive(False)
+
+        def work():
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            GLib.idle_add(finish, r)
+
+        def finish(r):
+            self.busy = False
+            self.spinner.stop(); self.box.set_sensitive(True)
+            done(r)
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    def root(self, args, label, done):
+        self.run(["pkexec", UPDATER] + args, label, done)
+
+    def after_channel(self, r):
+        self.updating = True
+        self.build()
+        self.updating = False
+        if r.returncode == 0:
+            self.result.set_text(tr("Channel changed. Press Check and Install Updates.",
+                                    "Canale cambiato. Premi Controlla e installa aggiornamenti."))
+
+    def check(self):
+        def done(r):
+            try:
+                st = open("/run/mangos-update.status").read()
+            except OSError:
+                st = ""
+            if "mangos=updated" in st:
+                a = tr("MangOS was updated: restart to see all the changes.",
+                       "MangOS è stato aggiornato: riavvia per vedere tutte le novità.")
+            elif "mangos=current" in st:
+                a = tr("MangOS is up to date.", "MangOS è aggiornato.")
+            elif "mangos=refused" in st:
+                a = tr("A MangOS update was REFUSED: its signature is not valid.",
+                       "Un aggiornamento di MangOS è stato RIFIUTATO: la firma non è valida.")
+            else:
+                a = tr("Cannot reach the MangOS update server.", "Non riesco a raggiungere il server degli aggiornamenti.")
+            b = (tr(" Debian and Flathub updates are installed.", " Gli aggiornamenti di Debian e Flathub sono installati.")
+                 if "debian=ok" in st else
+                 tr(" Debian updates failed: check the connection.", " Gli aggiornamenti di Debian non sono riusciti: controlla la connessione."))
+            self.build()
+            self.result.set_text(a + b)
+        self.run(["pkexec", "/usr/lib/mangos/apply-updates"], tr("Checking and installing…", "Controllo e installazione…"), done)
+
+    def rollback(self, prev):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.OK_CANCEL,
+                              text=tr(f"Go back to MangOS {nice(prev)}?", f"Tornare a MangOS {nice(prev)}?"))
+        d.format_secondary_text(tr("Your files and apps stay as they are. Restart afterwards.",
+                                   "I tuoi file e le tue app restano come sono. Dopo, riavvia il Mac."))
+        ok = d.run() == Gtk.ResponseType.OK
+        d.destroy()
+        if not ok:
+            return
+
+        def done(r):
+            self.build()
+            if r.returncode == 0:
+                self.result.set_text(tr(f"Back to MangOS {nice(prev)}. Restart the Mac to finish.",
+                                        f"Tornato a MangOS {nice(prev)}. Riavvia il Mac per completare."))
+            elif r.returncode != 126:
+                last = (r.stdout + r.stderr).strip().splitlines()[-1:] or [""]
+                self.result.set_text(tr("Could not go back: ", "Non è stato possibile tornare indietro: ") + last[0])
+        self.root(["rollback"], tr("Going back…", "Ritorno alla versione precedente…"), done)
+
+
+def main():
+    load_css()
+    p = Gtk.CssProvider(); p.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = Update(); w.connect("destroy", Gtk.main_quit); w.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

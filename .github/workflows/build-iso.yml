@@ -12,7 +12,7 @@ name: Build MangOS ISO
 on:
   push:
     branches: [main, master, "ccr-*"]
-    paths-ignore: ["docs/**", "**/*.md"]
+    paths-ignore: ["docs/**", "**/*.md", "channels/**"]
   workflow_dispatch:
     inputs:
       require_artcraft:
@@ -101,8 +101,9 @@ jobs:
             echo "**New installation:** download \`MangOS-${MANGOS_VERSION}-amd64.iso\`, check it against the \`.sha256\` file,"
             echo "write it to a USB stick (balenaEtcher works on Windows and macOS) and start the Mac holding Option."
             echo
-            echo "**Already installed:** MangOS updates itself from this release (files \`mangos-system.*\`,"
-            echo "signed with Sigstore by the MangOS build workflow). Settings > Software Update checks right away."
+            echo "**Beta build.** Macs on the beta channel get it automatically; it reaches everyone (stable"
+            echo "channel) when promoted. Updates are signed with Sigstore by the MangOS build workflow."
+            echo "Settings > Software Update: channel, check now, go back to the previous version."
             echo
             echo '```'
             cat out/*.iso.sha256
@@ -117,17 +118,20 @@ jobs:
           } > release-notes.md
           cat release-notes.md
 
-      - name: Publish to the public updates repository
+      # Every build is a beta (pre-release). Builds reach the stable channel
+      # (the release marked "latest") only when promoted with the
+      # "Promote a build to stable" workflow.
+      - name: Publish to the public updates repository (beta)
         if: env.HAS_UPDATES_TOKEN == 'true'
         uses: softprops/action-gh-release@v2
         with:
           repository: ${{ steps.meta.outputs.updates_repo }}
           token: ${{ secrets.MANGOS_UPDATES_TOKEN }}
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: MangOS ${{ steps.meta.outputs.tag }}
+          name: MangOS ${{ steps.meta.outputs.tag }} (beta)
           body_path: release-notes.md
-          prerelease: false
-          make_latest: true
+          prerelease: true
+          make_latest: false
           files: |
             out/*.iso
             out/*.iso.sha256
@@ -152,26 +156,48 @@ jobs:
             out/mangos-system.deb.sigstore.json
             out/mangos-system.version
 
-      - name: Keep only the latest build
+      - name: Update the beta channel
+        if: env.HAS_UPDATES_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MANGOS_UPDATES_TOKEN }}
+          REPO: ${{ steps.meta.outputs.updates_repo }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if ! gh release view beta -R "$REPO" >/dev/null 2>&1; then
+            gh release create beta -R "$REPO" --prerelease --latest=false --title "MangOS beta channel" \
+              --notes "Rolling beta channel used by MangOS updates (Settings > Software Update > beta)."
+          fi
+          gh release upload beta -R "$REPO" --clobber \
+            out/mangos-system.deb out/mangos-system.deb.sigstore.json out/mangos-system.version
+          gh release edit beta -R "$REPO" --prerelease --latest=false \
+            --notes "Rolling beta channel used by MangOS updates. Current build: $TAG ($(cat out/mangos-system.version))."
+
+      - name: Keep the stable build and the recent betas
         env:
           OWN_TOKEN: ${{ github.token }}
           UPDATES_TOKEN: ${{ secrets.MANGOS_UPDATES_TOKEN }}
           TAG: ${{ steps.meta.outputs.tag }}
           UPDATES_REPO: ${{ steps.meta.outputs.updates_repo }}
         run: |
-          prune() { # repo token tag-to-keep
-            GH_TOKEN="$2" gh release list -R "$1" --limit 100 --json tagName --jq '.[].tagName' |
-            while read -r t; do
-              [ "$t" = "$3" ] && continue
-              echo "Deleting old release $1 $t"
-              GH_TOKEN="$2" gh release delete "$t" -R "$1" --cleanup-tag --yes
-            done
-          }
           if [ "$HAS_UPDATES_TOKEN" = true ]; then
-            prune "$UPDATES_REPO" "$UPDATES_TOKEN" "$TAG"
-            prune "$GITHUB_REPOSITORY" "$OWN_TOKEN" ""   # builds now live in the public repository
+            # keep: the beta channel, the stable build ("latest"), the 6 newest builds
+            stable=$(GH_TOKEN="$UPDATES_TOKEN" gh release view -R "$UPDATES_REPO" --json tagName --jq .tagName 2>/dev/null || true)
+            GH_TOKEN="$UPDATES_TOKEN" gh release list -R "$UPDATES_REPO" --limit 200 --json tagName,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[].tagName' |
+            grep -vx beta | tail -n +7 | while read -r t; do
+              [ "$t" = "$stable" ] && continue
+              echo "Deleting old release $UPDATES_REPO $t"
+              GH_TOKEN="$UPDATES_TOKEN" gh release delete "$t" -R "$UPDATES_REPO" --cleanup-tag --yes
+            done
+            # builds now live in the public repository
+            GH_TOKEN="$OWN_TOKEN" gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' |
+            while read -r t; do GH_TOKEN="$OWN_TOKEN" gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes; done
           else
-            prune "$GITHUB_REPOSITORY" "$OWN_TOKEN" "$TAG"
+            GH_TOKEN="$OWN_TOKEN" gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' |
+            while read -r t; do
+              [ "$t" = "$TAG" ] && continue
+              GH_TOKEN="$OWN_TOKEN" gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
           fi
 
       - name: Keep the build log
