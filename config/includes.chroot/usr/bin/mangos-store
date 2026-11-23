@@ -8,7 +8,9 @@ progress ring while installing; app pages. Built on Debian's AppStream
 catalog. The apps of the week come from the Debian Popularity Contest
 (popcon.debian.org): the most used desktop apps you do not have yet,
 three new ones each week. Installing/removing goes through
-/usr/lib/mangos/store-helper (pkexec, administrator password)."""
+/usr/lib/mangos/store-helper (pkexec, administrator password). App pages
+say how heavy an app is on this Mac and warn when it cannot run here
+(mangos.appweight, /usr/share/mangos/store-requirements.conf)."""
 import datetime, html, json, math, os, re, shutil, subprocess, threading, time, urllib.request
 import cairo
 import gi
@@ -18,6 +20,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import AppStream as AS, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 from mangos import tr, load_css
+from mangos import appweight
 
 HELPER = "/usr/lib/mangos/store-helper"
 CACHE = os.path.join(GLib.get_user_cache_dir(), "mangos-store")
@@ -131,6 +134,12 @@ CSS = b"""
 .store-source { font-size: 12px; padding: 3px 12px; }
 .store-source:checked { background: #0A84FF; color: white; }
 .store-badge { font-size: 10px; font-weight: 800; color: #4A86E8; }
+.store-badge.bad { color: #FF453A; }
+.store-weight-light { color: #30A14E; }
+.store-weight-medium { color: #E8890C; }
+.store-weight-heavy { color: #FF453A; }
+.store-warn { border-radius: 10px; padding: 10px 14px; background: alpha(#FF453A, .12); }
+.store-warn-title { font-weight: 800; color: #FF453A; }
 .store-back { border: none; background: none; color: #0A84FF; font-weight: 600; box-shadow: none; }
 """
 
@@ -538,6 +547,7 @@ class Store(Gtk.Window):
         self.set_icon_name("mangos-store")
         self.set_position(Gtk.WindowPosition.CENTER)
         self.cat = Catalog()
+        threading.Thread(target=appweight.machine, daemon=True).start()   # glxinfo, once per boot
         self.busy = False
         self.buttons = {}   # pkgname -> list of Get buttons to refresh
         prov = Gtk.CssProvider(); prov.load_from_data(CSS)
@@ -639,7 +649,11 @@ class Store(Gtk.Window):
         s = Gtk.Label(label=c.get_summary() or "", xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=26)
         s.get_style_context().add_class("store-dim")
         txt.pack_start(n, False, False, 0); txt.pack_start(s, False, False, 0)
-        if flatpak_id(c):
+        if self.incompatible(c):
+            f = Gtk.Label(label=tr("Not compatible with this Mac", "Non compatibile con questo Mac"), xalign=0)
+            f.get_style_context().add_class("store-badge"); f.get_style_context().add_class("bad")
+            txt.pack_start(f, False, False, 0)
+        elif flatpak_id(c):
             f = Gtk.Label(label="Flathub", xalign=0); f.get_style_context().add_class("store-badge")
             txt.pack_start(f, False, False, 0)
         row.pack_start(txt, True, True, 0)
@@ -950,12 +964,30 @@ class Store(Gtk.Window):
             info.pack_start(sw, False, False, 0)
         top.pack_start(info, True, True, 0)
 
+        why = self.incompatible(c)
+        if why:
+            warn = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6)
+            warn.get_style_context().add_class("store-warn")
+            wt = Gtk.Label(label=tr("Not compatible with this Mac", "Non compatibile con questo Mac"), xalign=0)
+            wt.get_style_context().add_class("store-warn-title")
+            wd = Gtk.Label(label=why, xalign=0, wrap=True)
+            warn.pack_start(wt, False, False, 0); warn.pack_start(wd, False, False, 0)
+            box.pack_start(warn, False, False, 0)
+
         facts = Gtk.Box(spacing=0, margin_top=8)
-        for k, v in self.package_facts(pkg, c):
+        fields = {} if fid else self.apt_fields(pkg)
+        w = appweight.weight(fid if fid else pkg, fields, flatpak=bool(fid))
+        wlabel, wexplain = appweight.describe(w, tr)
+        for k, v, cls, tip in [(tr("On this Mac", "Su questo Mac"), "● " + wlabel, "store-weight-" + w, wexplain)] + \
+                [(k, v, None, None) for k, v in self.package_facts(pkg, c, fields)]:
             fb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             fb.get_style_context().add_class("store-fact")
             a = Gtk.Label(label=k.upper()); a.get_style_context().add_class("store-info-key")
             b = Gtk.Label(label=v); b.get_style_context().add_class("store-info-val")
+            if cls:
+                b.get_style_context().add_class(cls)
+            if tip:
+                fb.set_tooltip_text(tip)
             fb.pack_start(a, False, False, 0); fb.pack_start(b, False, False, 0)
             facts.pack_start(fb, False, False, 0)
         box.pack_start(facts, False, False, 0)
@@ -971,7 +1003,18 @@ class Store(Gtk.Window):
         box.pack_start(desc, False, False, 0)
         self.page(box, "app")
 
-    def package_facts(self, pkg, c):
+    def incompatible(self, c):
+        """Why the app cannot run on this Mac (None if it can, or we do not know)."""
+        fid = flatpak_id(c)
+        return appweight.problem(fid if fid else c.get_pkgname(), tr)
+
+    def apt_fields(self, pkg):
+        if not pkg:
+            return {}
+        out = subprocess.run(["apt-cache", "show", "--no-all-versions", pkg], capture_output=True, text=True).stdout
+        return dict(re.findall(r"^(Version|Installed-Size|Section|Depends|Pre-Depends): (.*)$", out, re.M))
+
+    def package_facts(self, pkg, c, fields=None):
         if flatpak_id(c):
             facts = [(tr("Source", "Fonte"), "Flathub")]
             rel = c.get_releases_plain().get_entries() if hasattr(c, "get_releases_plain") else []
@@ -985,8 +1028,7 @@ class Store(Gtk.Window):
                 facts.append((tr("License", "Licenza"), "LicenseRef" in lic and tr("Proprietary", "Proprietaria")
                               or lic.split(" ")[0][:20]))
             return facts
-        out = subprocess.run(["apt-cache", "show", "--no-all-versions", pkg], capture_output=True, text=True).stdout
-        f = dict(re.findall(r"^(Version|Installed-Size|Section): (.*)$", out, re.M))
+        f = fields if fields is not None else self.apt_fields(pkg)
         facts = []
         if "Installed-Size" in f:
             kb = int(f["Installed-Size"])
@@ -1102,6 +1144,18 @@ class Store(Gtk.Window):
         if self.cat.is_installed(c):
             self.launch(c); return
         fid = flatpak_id(c)
+        why = self.incompatible(c)
+        if why:
+            d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                  buttons=Gtk.ButtonsType.NONE,
+                                  text=tr("“%s” will probably not work on this Mac", "“%s” probabilmente non funzionerà su questo Mac") % c.get_name())
+            d.format_secondary_text(why)
+            d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL,
+                          tr("Install Anyway", "Installa comunque"), Gtk.ResponseType.OK)
+            ok = d.run() == Gtk.ResponseType.OK
+            d.destroy()
+            if not ok:
+                return
         if fid:
             self.run_helper(["flatpak-install", fid], lambda ok: self.after_change(c, ok), button=b)
         else:

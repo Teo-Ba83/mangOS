@@ -243,3 +243,11 @@ poppler-utils
 pulseaudio-utils
 flatpak
 timeshift
+
+# Mac-style apps (0.2): Calendar and Contacts with Google / iCloud accounts,
+# libsecret for Passwords, qrencode to share a Wi-Fi network as a QR code
+gnome-calendar
+gnome-contacts
+gnome-online-accounts-gtk
+gir1.2-secret-1
+qrencode

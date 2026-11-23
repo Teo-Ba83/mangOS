@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MangOS: keep a history of notifications for the Notification Center
+     (click on the date and time in the top bar). -->
+<channel name="xfce4-notifyd" version="1.0">
+  <property name="notification-log" type="bool" value="true"/>
+  <property name="log-level" type="uint" value="1"/>
+  <property name="log-level-apps" type="uint" value="0"/>
+  <property name="log-max-size-enabled" type="bool" value="true"/>
+  <property name="log-max-size" type="uint" value="200"/>
+  <property name="notify-location" type="uint" value="2"/>
+</channel>

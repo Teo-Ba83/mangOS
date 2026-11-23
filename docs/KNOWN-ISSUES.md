@@ -161,6 +161,23 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 - "App Store" is an Apple trademark, so the MangOS one is called
   **Mango Store**, with its own icon (the MangOS mango on a teal tile).
 
+### Labels: Light / Medium / Heavy, "Not compatible with this Mac"
+
+- Every app page shows **On this Mac: Light / Medium / Heavy**, an estimate
+  of memory and processor use. Known apps are listed in
+  /usr/share/mangos/store-requirements.conf (from each project's published
+  requirements); other Debian apps are judged from their size and what they
+  are built on (Electron / Chromium and Java = heavy, web engines and KDE
+  libraries = at least medium); other Flathub apps count as medium (they
+  bring their own runtime). It is an estimate, not a measurement.
+- **Not compatible with this Mac** (in lists, and a red box on the app page)
+  is shown only when this machine misses a listed requirement: OpenGL
+  version (measured with glxinfo once per boot; the GMA X3100 has 2.1),
+  Vulkan, CPU features (e.g. AVX, which the Core 2 Duo lacks) or memory.
+  On a newer Mac the same app shows no warning. Installing it anyway is
+  allowed after a warning. Apps not in the list are never marked, so some
+  incompatible ones can still slip through: tell us and they get added.
+
 ## Flathub
 
 - The Mango Store is **one catalog**: every Debian app plus the apps only
@@ -178,6 +195,30 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 - The first Flathub app also downloads its runtime (a few hundred MB);
   later apps share it. Flathub apps run in a sandbox; many are built with
   Electron and use software rendering on the GMA X3100.
+
+## Notes, Passwords, Calendar and Contacts, Notification Center
+
+- **Notes** (Launchpad): plain text files, first line = title, in
+  ~/Documents/Notes (~/Documenti/Note in Italian). Saved automatically,
+  folders, search, checklists (☐, a click ticks it). Synchronisation is
+  optional: Notes > menu > Sync… moves them to a folder that is already
+  synced (Nextcloud, Syncthing, Dropbox, a network share). There is no
+  iCloud Notes sync (Apple offers no way for other systems to use it).
+- **Passwords** (Settings, Launchpad): the login keyring (passwords saved
+  by apps through libsecret) and the saved Wi-Fi networks, with show / copy
+  (after your login password, then for 5 minutes), share a Wi-Fi network as
+  a QR code, forget it. Firefox keeps its own passwords: a button opens
+  them (about:logins). Wi-Fi networks saved for all users may also ask for
+  the administrator password.
+- **Calendar and Contacts** are GNOME Calendar and GNOME Contacts.
+  **Settings > Internet Accounts** connects Google (Google sign-in page),
+  iCloud (CalDAV / CardDAV with an app-specific password from
+  account.apple.com, step by step) and others (Microsoft 365, Nextcloud).
+  Not yet tried with real Google / iCloud accounts.
+- **Notification Center**: a click on the date and time in the top bar
+  opens today's date, a month calendar and the notifications received
+  (newest first; remove one or Clear All), plus Do Not Disturb. The history
+  is xfce4-notifyd's log (last 200 notifications), now on by default.
 
 ## Backups
 

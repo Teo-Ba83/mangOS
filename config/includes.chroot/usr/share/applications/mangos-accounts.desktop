@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Internet Accounts
+Name[it]=Account Internet
+Comment=Google, iCloud and other accounts for Calendar and Contacts
+Comment[it]=Account Google, iCloud e altri per Calendario e Contatti
+Exec=mangos-accounts
+Icon=gnome-online-accounts-gtk
+Terminal=false
+Categories=Settings;X-MangOS-Launchpad;
+Keywords=google;icloud;calendar;contacts;account;calendario;contatti;
+StartupNotify=true

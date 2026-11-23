@@ -59,6 +59,8 @@
       <property name="digital-time-format" type="string" value="%a %e %b  %H:%M"/>
       <property name="digital-time-font" type="string" value="Inter Medium 10"/>
       <property name="tooltip-format" type="string" value="%A %e %B %Y"/>
+      <!-- a click on the date and time opens the Notification Center -->
+      <property name="command" type="string" value="mangos-notifications"/>
     </property>
   </property>
 </channel>

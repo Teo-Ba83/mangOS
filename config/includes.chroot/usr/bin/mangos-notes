@@ -1,0 +1,512 @@
+#!/usr/bin/python3
+"""MangOS Notes: a simple notes app, like the Mac's.
+
+Folders on the left, notes (newest first) in the middle, the note on the
+right; saved automatically. Every note is a plain text file (first line =
+title) in one folder, ~/Documents/Notes by default, so it can be opened by
+any app, backed up, and synced: choosing a synced folder (Nextcloud,
+Syncthing, Dropbox, a network share...) is the optional synchronisation.
+Checklists: "☐ " at the start of a line; a click on the box ticks it."""
+import datetime, os, re, sys, time
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos", "notes.conf")
+BOX, TICK = "☐", "☑"
+EXT = ".txt"
+
+CSS = b"""
+.nt-side { background: alpha(currentColor, .04); }
+.nt-side list { background: transparent; }
+.nt-side row { padding: 6px 10px; border-radius: 7px; margin: 1px 6px; }
+.nt-side row:selected { background: alpha(#FFD60A, .55); color: @theme_fg_color; }
+.nt-list row { padding: 8px 12px; border-bottom: 1px solid alpha(currentColor, .07); }
+.nt-list row:selected { background: alpha(#FFD60A, .55); color: @theme_fg_color; border-radius: 7px; }
+.nt-title { font-weight: 700; font-size: 13px; }
+.nt-meta { font-size: 11px; opacity: .6; }
+.nt-head { font-size: 11px; font-weight: 700; opacity: .5; margin: 10px 16px 4px 16px; }
+.nt-date { font-size: 11px; opacity: .5; }
+textview.nt-edit, textview.nt-edit text { font-size: 14px; background: @theme_base_color; }
+.nt-empty { opacity: .5; font-size: 15px; }
+"""
+
+
+def default_dir():
+    docs = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS) or os.path.expanduser("~/Documents")
+    return os.path.join(docs, tr("Notes", "Note"))
+
+
+def notes_dir():
+    try:
+        d = open(CFG).read().strip()
+        if d:
+            return d
+    except OSError:
+        pass
+    return default_dir()
+
+
+def set_notes_dir(d):
+    os.makedirs(os.path.dirname(CFG), exist_ok=True)
+    with open(CFG, "w") as f:
+        f.write(d + "\n")
+
+
+def title_of(text):
+    for line in text.splitlines():
+        line = line.strip().lstrip(BOX + TICK).strip()
+        if line:
+            return line[:80]
+    return tr("New Note", "Nuova nota")
+
+
+def preview_of(text):
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return " ".join(lines[1:])[:90] if len(lines) > 1 else tr("No additional text", "Nessun altro testo")
+
+
+def nice_date(ts):
+    d = datetime.datetime.fromtimestamp(ts)
+    now = datetime.datetime.now()
+    if d.date() == now.date():
+        return d.strftime("%H:%M")
+    if d.date() == (now - datetime.timedelta(days=1)).date():
+        return tr("Yesterday", "Ieri")
+    if (now - d).days < 7:
+        return d.strftime("%A").capitalize()
+    return d.strftime("%d/%m/%y")
+
+
+class Note:
+    def __init__(self, path):
+        self.path = path
+        self.reload()
+
+    def reload(self):
+        try:
+            with open(self.path, encoding="utf-8", errors="replace") as f:
+                self.text = f.read()
+            self.mtime = os.path.getmtime(self.path)
+        except OSError:
+            self.text, self.mtime = "", time.time()
+
+
+class Notes(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title=tr("Notes", "Note"))
+        self.set_default_size(980, 600)
+        self.set_icon_name("notes")
+        self.root = notes_dir()
+        os.makedirs(self.root, exist_ok=True)
+        self.folder = None          # None = all notes
+        self.current = None
+        self.save_id = None
+        self.loading = False
+        self.monitors = []
+
+        hb = Gtk.HeaderBar(show_close_button=True, title=tr("Notes", "Note"))
+        self.set_titlebar(hb)
+        new = Gtk.Button.new_from_icon_name("document-edit-symbolic", Gtk.IconSize.BUTTON)
+        new.set_tooltip_text(tr("New Note (Ctrl+N)", "Nuova nota (Ctrl+N)"))
+        new.connect("clicked", lambda *_: self.new_note())
+        hb.pack_start(new)
+        self.delete_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
+        self.delete_btn.set_tooltip_text(tr("Delete Note", "Elimina nota"))
+        self.delete_btn.connect("clicked", lambda *_: self.delete_note())
+        hb.pack_start(self.delete_btn)
+        check = Gtk.Button.new_from_icon_name("checkbox-checked-symbolic", Gtk.IconSize.BUTTON)
+        check.set_tooltip_text(tr("Checklist", "Elenco di controllo"))
+        check.connect("clicked", lambda *_: self.toggle_checklist_line())
+        hb.pack_start(check)
+
+        menu = Gtk.MenuButton(image=Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
+        pop = Gtk.Menu()
+        for label, cb in ((tr("New Folder…", "Nuova cartella…"), self.new_folder),
+                          (tr("Open Notes Folder", "Apri la cartella delle note"),
+                           lambda *_: Gio.AppInfo.launch_default_for_uri(GLib.filename_to_uri(self.root), None)),
+                          (tr("Sync…", "Sincronizzazione…"), self.sync_dialog)):
+            it = Gtk.MenuItem(label=label); it.connect("activate", cb); pop.append(it)
+        pop.show_all(); menu.set_popup(pop)
+        hb.pack_end(menu)
+        self.search = Gtk.SearchEntry(placeholder_text=tr("Search", "Cerca"), width_chars=18)
+        self.search.connect("search-changed", lambda *_: self.fill_list())
+        hb.pack_end(self.search)
+
+        paned = Gtk.Paned(); self.add(paned)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); side.get_style_context().add_class("nt-side")
+        side.set_size_request(180, -1)
+        h = Gtk.Label(label=tr("FOLDERS", "CARTELLE"), xalign=0); h.get_style_context().add_class("nt-head")
+        side.pack_start(h, False, False, 0)
+        self.folders = Gtk.ListBox(); self.folders.connect("row-selected", self.on_folder)
+        side.pack_start(self.folders, True, True, 0)
+        paned.pack1(side, False, False)
+
+        inner = Gtk.Paned(); paned.pack2(inner, True, False)
+        self.list = Gtk.ListBox(); self.list.get_style_context().add_class("nt-list")
+        self.list.connect("row-selected", self.on_note)
+        ls = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER); ls.add(self.list)
+        ls.set_size_request(260, -1)
+        inner.pack1(ls, False, False)
+
+        self.stack = Gtk.Stack()
+        empty = Gtk.Label(label=tr("No note selected", "Nessuna nota selezionata"))
+        empty.get_style_context().add_class("nt-empty")
+        self.stack.add_named(empty, "empty")
+        ed = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.date = Gtk.Label(margin_top=8); self.date.get_style_context().add_class("nt-date")
+        ed.pack_start(self.date, False, False, 0)
+        self.view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, left_margin=28, right_margin=28,
+                                 top_margin=10, bottom_margin=20, pixels_below_lines=3)
+        self.view.get_style_context().add_class("nt-edit")
+        self.buf = self.view.get_buffer()
+        self.title_tag = self.buf.create_tag("title", weight=Pango.Weight.BOLD, scale=1.6, pixels_below_lines=8)
+        self.done_tag = self.buf.create_tag("done", strikethrough=True, foreground="#8e8e93")
+        self.buf.connect("changed", self.on_changed)
+        self.view.connect("button-release-event", self.on_click)
+        es = Gtk.ScrolledWindow(); es.add(self.view)
+        ed.pack_start(es, True, True, 0)
+        self.stack.add_named(ed, "editor")
+        inner.pack2(self.stack, True, False)
+
+        acc = Gtk.AccelGroup(); self.add_accel_group(acc)
+        acc.connect(Gdk.keyval_from_name("n"), Gdk.ModifierType.CONTROL_MASK, 0, lambda *_: self.new_note() or True)
+        acc.connect(Gdk.keyval_from_name("f"), Gdk.ModifierType.CONTROL_MASK, 0, lambda *_: self.search.grab_focus() or True)
+        acc.connect(Gdk.keyval_from_name("l"), Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, 0,
+                    lambda *_: self.toggle_checklist_line() or True)
+        self.connect("delete-event", lambda *_: self.flush() and False)
+
+        self.fill_folders()
+        self.watch()
+
+    # ---- folders
+    def subfolders(self):
+        try:
+            return sorted(d for d in os.listdir(self.root)
+                          if not d.startswith(".") and os.path.isdir(os.path.join(self.root, d)))
+        except OSError:
+            return []
+
+    def fill_folders(self):
+        sel = self.folder
+        for c in self.folders.get_children():
+            c.destroy()
+        for name, path, icon in [(tr("All Notes", "Tutte le note"), None, "folder-documents-symbolic"),
+                                 (tr("Notes", "Note"), self.root, "folder-symbolic")] + \
+                                [(d, os.path.join(self.root, d), "folder-symbolic") for d in self.subfolders()]:
+            row = Gtk.ListBoxRow(); row.path = path
+            b = Gtk.Box(spacing=8)
+            b.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
+            b.pack_start(Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.END), True, True, 0)
+            n = Gtk.Label(label=str(len(self.load(path)))); n.get_style_context().add_class("nt-meta")
+            b.pack_end(n, False, False, 0)
+            row.add(b); self.folders.add(row)
+            if path == sel:
+                self.folders.select_row(row)
+        self.folders.show_all()
+        if self.folders.get_selected_row() is None:
+            self.folders.select_row(self.folders.get_row_at_index(0))
+
+    def on_folder(self, lb, row):
+        if row is None:
+            return
+        self.flush()
+        self.folder = row.path
+        self.fill_list()
+
+    def new_folder(self, *_):
+        d = Gtk.Dialog(title=tr("New Folder", "Nuova cartella"), transient_for=self, modal=True)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        e = Gtk.Entry(activates_default=True, margin=12, placeholder_text=tr("Name", "Nome"))
+        d.get_content_area().add(e); d.show_all()
+        if d.run() == Gtk.ResponseType.OK:
+            name = re.sub(r"[/\\:]", "-", e.get_text().strip()).lstrip(".")
+            if name:
+                os.makedirs(os.path.join(self.root, name), exist_ok=True)
+                self.folder = os.path.join(self.root, name)
+                self.fill_folders()
+        d.destroy()
+
+    # ---- notes
+    def load(self, folder):
+        dirs = [self.root] + [os.path.join(self.root, d) for d in self.subfolders()] if folder is None else [folder]
+        out = []
+        for d in dirs:
+            try:
+                out += [Note(os.path.join(d, f)) for f in os.listdir(d) if f.endswith((EXT, ".md")) and not f.startswith(".")]
+            except OSError:
+                pass
+        return sorted(out, key=lambda n: n.mtime, reverse=True)
+
+    def fill_list(self, select=None):
+        q = self.search.get_text().strip().lower()
+        cur = select or (self.current.path if self.current else None)
+        self.loading = True
+        for c in self.list.get_children():
+            c.destroy()
+        target = None
+        for n in self.load(self.folder):
+            if q and q not in n.text.lower():
+                continue
+            row = Gtk.ListBoxRow(); row.note = n
+            b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            t = Gtk.Label(label=title_of(n.text), xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            t.get_style_context().add_class("nt-title")
+            m = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            m.set_markup(f"<b>{GLib.markup_escape_text(nice_date(n.mtime))}</b>  "
+                         f"{GLib.markup_escape_text(preview_of(n.text))}")
+            m.get_style_context().add_class("nt-meta")
+            b.pack_start(t, False, False, 0); b.pack_start(m, False, False, 0)
+            row.add(b); self.list.add(row)
+            if n.path == cur:
+                target = row
+        self.list.show_all()
+        row = target or self.list.get_row_at_index(0)
+        if row is not None:
+            self.list.select_row(row)
+        self.loading = False
+        if row is None:
+            self.show_note(None)
+        elif not self.current or self.current.path != row.note.path:
+            row.note.reload()
+            self.show_note(row.note)
+
+    def on_note(self, lb, row):
+        if self.loading or row is None:
+            return
+        if self.current and row.note.path == self.current.path:
+            return
+        self.flush()
+        row.note.reload()
+        self.show_note(row.note)
+
+    def show_note(self, note):
+        self.current = note
+        self.delete_btn.set_sensitive(note is not None)
+        if note is None:
+            self.stack.set_visible_child_name("empty")
+            return
+        self.loading = True
+        self.buf.set_text(note.text)
+        self.loading = False
+        self.restyle()
+        self.date.set_text(datetime.datetime.fromtimestamp(note.mtime).strftime("%e %B %Y, %H:%M").strip())
+        self.stack.set_visible_child_name("editor")
+
+    def new_note(self):
+        self.flush()
+        folder = self.folder or self.root
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "note-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + EXT)
+        i = 1
+        while os.path.exists(path):
+            path = path[:-len(EXT)] + f"-{i}{EXT}"; i += 1
+        open(path, "w").close()
+        self.search.set_text("")
+        self.fill_list(select=path)
+        self.fill_counts()
+        self.view.grab_focus()
+
+    def delete_note(self):
+        if not self.current:
+            return
+        n, self.current = self.current, None
+        if self.save_id:
+            GLib.source_remove(self.save_id); self.save_id = None
+        f = Gio.File.new_for_path(n.path)
+        try:
+            f.trash(None)           # recoverable from the Trash
+        except GLib.Error:
+            try:
+                os.remove(n.path)
+            except OSError:
+                pass
+        self.fill_list(); self.fill_counts()
+
+    def fill_counts(self):
+        for row in self.folders.get_children():
+            box = row.get_child()
+            box.get_children()[-1].set_text(str(len(self.load(row.path))))
+
+    # ---- editing
+    def restyle(self):
+        b = self.buf
+        b.remove_all_tags(b.get_start_iter(), b.get_end_iter())
+        s = b.get_start_iter(); e = s.copy(); e.forward_to_line_end()
+        b.apply_tag(self.title_tag, s, e)
+        for i in range(b.get_line_count()):
+            ls = b.get_iter_at_line(i)
+            le = ls.copy()
+            if not le.ends_line():
+                le.forward_to_line_end()
+            if b.get_text(ls, le, False).startswith(TICK):
+                b.apply_tag(self.done_tag, ls, le)
+
+    def on_changed(self, *_):
+        if self.loading or not self.current:
+            return
+        self.restyle()
+        if self.save_id:
+            GLib.source_remove(self.save_id)
+        self.save_id = GLib.timeout_add(700, self.save)
+
+    def save(self):
+        self.save_id = None
+        if not self.current:
+            return False
+        text = self.buf.get_text(self.buf.get_start_iter(), self.buf.get_end_iter(), False)
+        if text != self.current.text:
+            tmp = self.current.path + ".saving"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(text)
+                os.replace(tmp, self.current.path)
+            except OSError:
+                return False
+            self.current.text = text
+            self.current.mtime = os.path.getmtime(self.current.path)
+            row = self.list.get_selected_row()
+            if row is not None:
+                box = row.get_child().get_children()
+                box[0].set_text(title_of(text))
+                box[1].set_markup(f"<b>{GLib.markup_escape_text(nice_date(self.current.mtime))}</b>  "
+                                  f"{GLib.markup_escape_text(preview_of(text))}")
+                if row.get_index() != 0:          # most recently edited first
+                    self.loading = True
+                    self.list.remove(row); self.list.insert(row, 0); self.list.select_row(row)
+                    self.loading = False
+        return False
+
+    def flush(self):
+        if self.save_id:
+            GLib.source_remove(self.save_id)
+            self.save()
+        return True
+
+    def toggle_checklist_line(self):
+        if not self.current:
+            return
+        it = self.buf.get_iter_at_mark(self.buf.get_insert())
+        ls = self.buf.get_iter_at_line(it.get_line())
+        nxt = ls.copy(); nxt.forward_chars(2)
+        head = self.buf.get_text(ls, nxt, False)
+        if head in (BOX + " ", TICK + " "):
+            self.buf.delete(ls, nxt)
+        else:
+            self.buf.insert(ls, BOX + " ")
+
+    def on_click(self, view, ev):
+        x, y = view.window_to_buffer_coords(Gtk.TextWindowType.TEXT, int(ev.x), int(ev.y))
+        ok, it = view.get_iter_at_location(x, y)
+        if not ok or it.get_line_offset() > 1:
+            return False
+        ls = self.buf.get_iter_at_line(it.get_line())
+        one = ls.copy(); one.forward_char()
+        ch = self.buf.get_text(ls, one, False)
+        if ch in (BOX, TICK):
+            self.buf.delete(ls, one)
+            self.buf.insert(ls, TICK if ch == BOX else BOX)
+        return False
+
+    # ---- other apps or a sync service changed the folder
+    def watch(self):
+        self.monitors = []
+        for d in [self.root] + [os.path.join(self.root, s) for s in self.subfolders()]:
+            m = Gio.File.new_for_path(d).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+            m.connect("changed", self.on_disk_change)
+            self.monitors.append(m)
+        self.disk_id = None
+
+    def on_disk_change(self, *_):
+        if getattr(self, "disk_id", None):
+            GLib.source_remove(self.disk_id)
+        self.disk_id = GLib.timeout_add(800, self.reload_from_disk)
+
+    def reload_from_disk(self):
+        self.disk_id = None
+        if self.save_id:              # still typing: our own save will come
+            return False
+        if self.current and os.path.exists(self.current.path):
+            old = self.current.text
+            self.current.reload()
+            if self.current.text != old:
+                self.show_note(self.current)
+        self.fill_list(); self.fill_counts()
+        if len(self.monitors) != len(self.subfolders()) + 1:
+            self.fill_folders(); self.watch()
+        return False
+
+    # ---- sync
+    def sync_dialog(self, *_):
+        d = Gtk.Dialog(title=tr("Sync Notes", "Sincronizza le note"), transient_for=self, modal=True)
+        d.add_buttons(tr("Close", "Chiudi"), Gtk.ResponseType.CLOSE)
+        box = d.get_content_area(); box.set_spacing(10); box.set_border_width(16)
+        msg = Gtk.Label(xalign=0, wrap=True, max_width_chars=58, label=tr(
+            "Your notes are plain text files in this folder:",
+            "Le tue note sono semplici file di testo in questa cartella:"))
+        box.add(msg)
+        path = Gtk.Label(label=self.root, xalign=0, selectable=True); path.get_style_context().add_class("nt-title")
+        box.add(path)
+        how = Gtk.Label(xalign=0, wrap=True, max_width_chars=58, label=tr(
+            "To have them on your other computers and phone, choose a folder that is already synced: "
+            "Nextcloud, Syncthing or Dropbox (from the Mango Store), or a folder on your network. "
+            "Synchronisation is optional: without it notes stay only on this Mac (and in its backups).",
+            "Per averle sugli altri computer e sul telefono, scegli una cartella già sincronizzata: "
+            "Nextcloud, Syncthing o Dropbox (dal Mango Store), oppure una cartella in rete. "
+            "La sincronizzazione è facoltativa: senza, le note restano solo su questo Mac (e nei suoi backup)."))
+        box.add(how)
+        row = Gtk.Box(spacing=8)
+        ch = Gtk.Button(label=tr("Choose a Folder…", "Scegli una cartella…"))
+        st = Gtk.Button(label=tr("Mango Store", "Mango Store"))
+        st.connect("clicked", lambda *_: GLib.spawn_command_line_async("mangos-store"))
+        row.pack_start(ch, False, False, 0); row.pack_start(st, False, False, 0)
+        box.add(row)
+
+        def choose(_b):
+            fc = Gtk.FileChooserDialog(title=tr("Folder for your notes", "Cartella per le note"), transient_for=d,
+                                       action=Gtk.FileChooserAction.SELECT_FOLDER)
+            fc.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, tr("Choose", "Scegli"), Gtk.ResponseType.OK)
+            if fc.run() == Gtk.ResponseType.OK:
+                new = fc.get_filename()
+                if new and os.path.realpath(new) != os.path.realpath(self.root):
+                    self.move_notes(new)
+                    path.set_text(self.root)
+            fc.destroy()
+        ch.connect("clicked", choose)
+        d.show_all(); d.run(); d.destroy()
+
+    def move_notes(self, new):
+        """Copy the notes into the new folder (existing files there are kept)."""
+        self.flush()
+        import shutil
+        for n in self.load(None):
+            rel = os.path.relpath(n.path, self.root)
+            dst = os.path.join(new, rel)
+            if not os.path.exists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(n.path, dst)
+        set_notes_dir(new)
+        self.root, self.folder, self.current = new, None, None
+        self.fill_folders(); self.watch()
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.mangos.Notes")
+
+    def do_activate(self):
+        w = self.get_active_window()
+        if w is None:
+            load_css()
+            p = Gtk.CssProvider(); p.load_from_data(CSS)
+            Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p,
+                                                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            w = Notes(self); w.show_all()
+        w.present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

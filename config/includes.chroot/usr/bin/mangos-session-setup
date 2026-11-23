@@ -64,6 +64,17 @@ if ! grep -q "uca-action-$QL_ID" "$td/accels.scm" 2>/dev/null; then
 fi
 if $changed; then thunar -q 2>/dev/null || true; fi
 
+# A click on the date and time in the top bar opens the Notification Center
+# (added in 0.2; a command the user set on the clock is kept).
+if [ ! -e "$cfg/clock-notifications" ]; then
+  for p in $(xfconf-query -c xfce4-panel -l 2>/dev/null | grep -E '^/plugins/plugin-[0-9]+$'); do
+    [ "$(xfconf-query -c xfce4-panel -p "$p" 2>/dev/null)" = clock ] || continue
+    [ -n "$(xfconf-query -c xfce4-panel -p "$p/command" 2>/dev/null)" ] ||
+      xfconf-query -c xfce4-panel -p "$p/command" -n -t string -s mangos-notifications
+  done
+  touch "$cfg/clock-notifications"
+fi
+
 # The dock's Settings item now opens MangOS System Settings (gear icon).
 di=$HOME/.config/plank/dock1/launchers/xfce-settings-manager.dockitem
 if [ -f "$di" ] && grep -q 'xfce-settings-manager.desktop' "$di"; then

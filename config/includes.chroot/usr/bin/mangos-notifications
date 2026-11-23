@@ -1,0 +1,333 @@
+#!/usr/bin/python3
+"""MangOS Notification Center: opens from the clock in the top bar, like the Mac's.
+
+usage: mangos-notifications      show the panel (again: hide it)
+
+Today's date and a month calendar, then the notifications received
+(newest first, grouped by app), each removable, plus "Clear All" and
+Do Not Disturb. The history is the one xfce4-notifyd keeps
+(~/.cache/xfce4/notifyd/log.sqlite); it is read directly and changed
+through notifyd's org.xfce.Notifyd.Log D-Bus interface where possible."""
+import datetime, os, sqlite3, subprocess, sys, time
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+LOG = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "xfce4/notifyd/log.sqlite")
+W = 360
+MAX = 100
+# A click on the clock while the panel is open first closes it (pointer grab),
+# then starts this command again: that second start must not reopen it.
+STAMP = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mangos-notifications.closed")
+
+CSS = b"""
+.nc-window { background: transparent; }
+.nc-box { border-radius: 16px; background: alpha(@theme_bg_color, .97); border: 1px solid alpha(currentColor, .14);
+          box-shadow: 0 8px 30px alpha(black, .35); padding: 12px; }
+.nc-day { font-size: 13px; font-weight: 600; opacity: .7; }
+.nc-date { font-size: 26px; font-weight: 800; }
+.nc-card { border-radius: 12px; background: alpha(currentColor, .07); padding: 9px 10px; }
+.nc-card.unread { background: alpha(#0A84FF, .13); }
+.nc-app { font-size: 11px; font-weight: 600; opacity: .62; }
+.nc-time { font-size: 11px; opacity: .5; }
+.nc-sum { font-weight: 700; font-size: 13px; }
+.nc-body { font-size: 12px; opacity: .85; }
+.nc-head { font-weight: 700; font-size: 13px; }
+.nc-empty { opacity: .55; font-size: 13px; }
+.nc-x { min-width: 20px; min-height: 20px; padding: 0; border-radius: 99px; border: none; box-shadow: none;
+        background: alpha(currentColor, .12); }
+calendar.nc-cal { border: none; background: transparent; border-radius: 10px; }
+calendar.nc-cal:selected { background: #FF453A; color: white; border-radius: 99px; }
+"""
+
+
+def when(ts):
+    """notifyd stores microseconds since the epoch (older rows: seconds)."""
+    if ts > 10 ** 14:
+        ts /= 1_000_000
+    elif ts > 10 ** 11:
+        ts /= 1000
+    d = datetime.datetime.fromtimestamp(ts)
+    now = datetime.datetime.now()
+    secs = (now - d).total_seconds()
+    if secs < 60:
+        return tr("now", "adesso")
+    if secs < 3600:
+        return tr(f"{int(secs // 60)} min ago", f"{int(secs // 60)} min fa")
+    if d.date() == now.date():
+        return d.strftime("%H:%M")
+    if d.date() == (now - datetime.timedelta(days=1)).date():
+        return tr("Yesterday ", "Ieri ") + d.strftime("%H:%M")
+    return d.strftime("%d/%m %H:%M")
+
+
+def entries():
+    if not os.path.exists(LOG):
+        return []
+    try:
+        db = sqlite3.connect(f"file:{LOG}?mode=ro", uri=True, timeout=2)
+        rows = db.execute("SELECT id, timestamp, app_id, app_name, icon_id, summary, body, is_read "
+                          "FROM notifications ORDER BY timestamp DESC LIMIT ?", (MAX,)).fetchall()
+        db.close()
+        return rows
+    except sqlite3.Error:
+        return []
+
+
+def log_call(method, *args):
+    """org.xfce.Notifyd.Log (Clear, MarkAllRead, ...); False if notifyd lacks it."""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        params = GLib.Variant("(" + "s" * len(args) + ")", args) if args else None
+        bus.call_sync("org.xfce.Notifyd", "/org/xfce/Notifyd", "org.xfce.Notifyd.Log", method,
+                      params, None, Gio.DBusCallFlags.NONE, 3000, None)
+        return True
+    except GLib.Error:
+        return False
+
+
+def db_write(sql, *args):
+    try:
+        db = sqlite3.connect(LOG, timeout=3)
+        db.execute(sql, args); db.commit(); db.close()
+    except sqlite3.Error:
+        pass
+
+
+def xfconf(prop, value=None):
+    if value is None:
+        r = subprocess.run(["xfconf-query", "-c", "xfce4-notifyd", "-p", prop], capture_output=True, text=True)
+        return r.stdout.strip()
+    subprocess.run(["xfconf-query", "-c", "xfce4-notifyd", "-p", prop, "-n", "-t", "bool", "-s", value])
+
+
+def icon_image(icon_id, app_id):
+    img = None
+    if icon_id and icon_id.startswith("/") and os.path.exists(icon_id):
+        try:
+            from gi.repository import GdkPixbuf
+            img = Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_id, 28, 28, True))
+        except GLib.Error:
+            img = None
+    if img is None:
+        theme = Gtk.IconTheme.get_default()
+        name = next((n for n in (icon_id, app_id, (app_id or "").lower()) if n and theme.has_icon(n)),
+                    "preferences-system-notifications")
+        img = Gtk.Image.new_from_icon_name(name, Gtk.IconSize.DND); img.set_pixel_size(28)
+    img.set_valign(Gtk.Align.START)
+    return img
+
+
+class Panel(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=tr("Notification Center", "Centro notifiche"))
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_keep_above(True); self.set_resizable(False)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.get_style_context().add_class("nc-window")
+        screen = self.get_screen()
+        if screen.get_rgba_visual() and screen.is_composited():
+            self.set_visual(screen.get_rgba_visual()); self.set_app_paintable(True)
+
+        outer = Gtk.Box(margin=10); self.add(outer)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.get_style_context().add_class("nc-box"); box.set_size_request(W, -1)
+        outer.pack_start(box, True, True, 0)
+
+        now = datetime.datetime.now()
+        day = Gtk.Label(label=now.strftime("%A").capitalize(), xalign=0); day.get_style_context().add_class("nc-day")
+        date = Gtk.Label(label=now.strftime("%e %B %Y").strip(), xalign=0); date.get_style_context().add_class("nc-date")
+        top = Gtk.Box(spacing=8)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); tb.pack_start(day, False, False, 0); tb.pack_start(date, False, False, 0)
+        top.pack_start(tb, True, True, 0)
+        cal_btn = Gtk.Button.new_from_icon_name("x-office-calendar-symbolic", Gtk.IconSize.BUTTON)
+        cal_btn.set_tooltip_text(tr("Open Calendar", "Apri Calendario")); cal_btn.set_valign(Gtk.Align.CENTER)
+        cal_btn.connect("clicked", lambda *_: self.launch(["gnome-calendar"]))
+        top.pack_end(cal_btn, False, False, 0)
+        box.pack_start(top, False, False, 0)
+
+        cal = Gtk.Calendar(); cal.get_style_context().add_class("nc-cal")
+        cal.connect("day-selected-double-click", lambda c: self.launch(
+            ["gnome-calendar", "--date", "%04d-%02d-%02d" % (c.get_date()[0], c.get_date()[1] + 1, c.get_date()[2])]))
+        box.pack_start(cal, False, False, 0)
+
+        head = Gtk.Box(spacing=6)
+        h = Gtk.Label(label=tr("Notifications", "Notifiche"), xalign=0); h.get_style_context().add_class("nc-head")
+        head.pack_start(h, True, True, 0)
+        self.clear = Gtk.Button(label=tr("Clear All", "Cancella tutto"), relief=Gtk.ReliefStyle.NONE)
+        self.clear.connect("clicked", lambda *_: self.clear_all())
+        head.pack_end(self.clear, False, False, 0)
+        box.pack_start(head, False, False, 0)
+
+        self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.scroll.set_propagate_natural_height(True)
+        self.scroll.add(self.list)
+        box.pack_start(self.scroll, True, True, 0)
+
+        dnd = Gtk.Box(spacing=10)
+        dnd.pack_start(Gtk.Image.new_from_icon_name("notifications-disabled-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
+        dnd.pack_start(Gtk.Label(label=tr("Do Not Disturb", "Non disturbare"), xalign=0), True, True, 0)
+        self.dnd = Gtk.Switch(active=xfconf("/do-not-disturb") == "true", valign=Gtk.Align.CENTER)
+        self.dnd.connect("notify::active", lambda s, _p: xfconf("/do-not-disturb", "true" if s.get_active() else "false"))
+        dnd.pack_end(self.dnd, False, False, 0)
+        box.pack_start(dnd, False, False, 0)
+        set_ = Gtk.Button(label=tr("Notification Settings…", "Impostazioni notifiche…"), relief=Gtk.ReliefStyle.NONE,
+                          halign=Gtk.Align.START)
+        set_.connect("clicked", lambda *_: self.launch(["xfce4-notifyd-config"]))
+        box.pack_start(set_, False, False, 0)
+
+        self.connect("key-press-event", lambda w, e: e.keyval == Gdk.KEY_Escape and self.close_panel())
+        self.connect("focus-out-event", lambda *_: GLib.timeout_add(150, self.hide_if_unfocused))
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.connect("button-press-event", self.on_press)
+        self.grabbed = False
+
+    # ---- list
+    def fill(self):
+        for c in self.list.get_children():
+            c.destroy()
+        rows = entries()
+        self.clear.set_sensitive(bool(rows))
+        if not rows:
+            e = Gtk.Label(label=tr("No notifications", "Nessuna notifica"), margin=18)
+            e.get_style_context().add_class("nc-empty")
+            self.list.pack_start(e, False, False, 0)
+        for nid, ts, app_id, app_name, icon_id, summary, body, is_read in rows:
+            card = Gtk.Box(spacing=10); card.get_style_context().add_class("nc-card")
+            if not is_read:
+                card.get_style_context().add_class("unread")
+            card.pack_start(icon_image(icon_id, app_id), False, False, 0)
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            meta = Gtk.Box(spacing=6)
+            a = Gtk.Label(label=(app_name or app_id or "").upper(), xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            a.get_style_context().add_class("nc-app"); meta.pack_start(a, True, True, 0)
+            t = Gtk.Label(label=when(ts)); t.get_style_context().add_class("nc-time"); meta.pack_end(t, False, False, 0)
+            col.pack_start(meta, False, False, 0)
+            if summary:
+                s = Gtk.Label(label=summary, xalign=0, wrap=True, max_width_chars=34)
+                s.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR); s.get_style_context().add_class("nc-sum")
+                col.pack_start(s, False, False, 0)
+            if body:
+                b = Gtk.Label(xalign=0, wrap=True, max_width_chars=36, lines=4, ellipsize=Pango.EllipsizeMode.END)
+                b.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                try:
+                    Pango.parse_markup(body, -1, "\0"); b.set_markup(body)
+                except GLib.Error:
+                    b.set_text(body)
+                b.get_style_context().add_class("nc-body"); col.pack_start(b, False, False, 0)
+            card.pack_start(col, True, True, 0)
+            x = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
+            x.get_style_context().add_class("nc-x"); x.set_valign(Gtk.Align.START)
+            x.set_tooltip_text(tr("Remove", "Rimuovi"))
+            x.connect("clicked", lambda _b, i=nid, c=card: self.remove(i, c))
+            card.pack_end(x, False, False, 0)
+            self.list.pack_start(card, False, False, 0)
+        self.list.show_all()
+        mon = Gdk.Display.get_default().get_primary_monitor() or Gdk.Display.get_default().get_monitor(0)
+        self.scroll.set_max_content_height(max(200, mon.get_workarea().height - 520))
+
+    def remove(self, nid, card):
+        if not log_call("Delete", nid):
+            db_write("DELETE FROM notifications WHERE id = ?", nid)
+        card.destroy()
+        if not self.list.get_children():
+            self.fill()
+
+    def clear_all(self):
+        if not log_call("Clear"):
+            db_write("DELETE FROM notifications")
+        self.fill()
+
+    def launch(self, cmd):
+        try:
+            subprocess.Popen(cmd)
+        except OSError:
+            pass
+        self.close_panel()
+
+    # ---- popup behaviour (like the Control Center)
+    def on_press(self, w, ev):
+        win = self.get_window()
+        if win is None:
+            return False
+        ox, oy = win.get_origin()[1:]
+        ww, wh = self.get_allocated_width(), self.get_allocated_height()
+        if not (ox + 10 <= ev.x_root < ox + ww - 10 and oy + 10 <= ev.y_root < oy + wh - 10):
+            self.close_panel()
+            return True
+        return False
+
+    def grab(self):
+        win = self.get_window()
+        if win is None or not self.get_visible():
+            return False
+        st = Gdk.Display.get_default().get_default_seat().grab(win, Gdk.SeatCapabilities.ALL_POINTING, True,
+                                                              None, None, None)
+        self.grabbed = st == Gdk.GrabStatus.SUCCESS
+        if not self.grabbed:
+            GLib.timeout_add(150, self.grab)
+        return False
+
+    def hide_if_unfocused(self):
+        if not self.is_active():
+            self.close_panel()
+        return False
+
+    def close_panel(self):
+        if self.grabbed:
+            Gdk.Display.get_default().get_default_seat().ungrab(); self.grabbed = False
+        self.hide()
+        try:
+            open(STAMP, "w").close()
+        except OSError:
+            pass
+        log_call("MarkAllRead") or db_write("UPDATE notifications SET is_read = 1")
+        app = self.get_application()
+        if app:
+            app.quit()
+
+    def popup(self):
+        self.fill()
+        self.show_all()
+        disp = Gdk.Display.get_default()
+        mon = disp.get_primary_monitor() or disp.get_monitor(0)
+        geo, work = mon.get_geometry(), mon.get_workarea()
+
+        def place():
+            ww = max(W + 20, self.get_allocated_width())
+            self.move(geo.x + geo.width - ww - 2, work.y + 2)
+            return False
+        place()
+        self.present_with_time(Gtk.get_current_event_time())
+        GLib.timeout_add(60, place)
+        GLib.timeout_add(200, self.grab)
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.mangos.Notifications", flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.panel = None
+
+    def do_command_line(self, cl):
+        if self.panel is not None and self.panel.get_visible():
+            self.panel.close_panel()      # second click on the clock: close
+            return 0
+        try:
+            if time.time() - os.path.getmtime(STAMP) < 0.6:
+                return 0
+        except OSError:
+            pass
+        load_css()
+        p = Gtk.CssProvider(); p.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.panel = Panel(); self.panel.set_application(self)
+        self.panel.popup()
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

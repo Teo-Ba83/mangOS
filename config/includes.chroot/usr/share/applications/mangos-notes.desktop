@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Notes
+Name[it]=Note
+Comment=Quick notes, saved automatically
+Comment[it]=Appunti veloci, salvati automaticamente
+Exec=mangos-notes
+Icon=notes
+Terminal=false
+Categories=Utility;X-MangOS-Launchpad;
+Keywords=notes;memo;checklist;appunti;note;
+StartupNotify=true
