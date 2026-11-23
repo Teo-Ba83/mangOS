@@ -606,6 +606,13 @@ class Store(Gtk.Window):
             self.stack.remove(old)
         sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         sc.add(widget); sc.show_all()
+        # remember when the user scrolls (wheel, trackpad, scrollbar), so the
+        # banner's slide changes never move the page under them
+        sc.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        mark = lambda *_: setattr(self, "last_scroll", time.monotonic()) or False
+        sc.connect("scroll-event", mark)
+        sc.connect("button-press-event", mark)
+        sc.connect("button-release-event", mark)
         self.stack.add_named(sc, name); self.stack.set_visible_child_name(name)
 
     def column(self):
@@ -752,6 +759,7 @@ class Store(Gtk.Window):
             b = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
             b.get_style_context().add_class("store-arrow")
             b.set_halign(align); b.set_valign(Gtk.Align.CENTER); b.set_margin_start(8); b.set_margin_end(8)
+            b.set_focus_on_click(False); b.set_can_focus(False)
             b.connect("clicked", lambda _b, st=step: self.slide(st, user=True))
             overlay.add_overlay(b)
         outer.pack_start(overlay, False, False, 0)
@@ -788,6 +796,9 @@ class Store(Gtk.Window):
             button.connect("clicked", action)
         else:
             button.set_halign(Gtk.Align.START)
+        # the banner's buttons never take the keyboard focus: when a slide
+        # with the focus goes away, GTK would scroll the page back up to it
+        button.set_focus_on_click(False); button.set_can_focus(False)
         txt.pack_start(button, False, False, 8)
         hero.pack_start(txt, True, True, 0)
         if isinstance(image, Gtk.Image):
@@ -800,7 +811,7 @@ class Store(Gtk.Window):
             ev = hero
         self.slides.add_named(ev, name); ev.show_all()
         self.slide_names.append(name)
-        dot = Gtk.Button(); dot.get_style_context().add_class("store-dot")
+        dot = Gtk.Button(can_focus=False, focus_on_click=False); dot.get_style_context().add_class("store-dot")
         dot.connect("clicked", lambda *_: self.show_slide(name, user=True))
         self.dots.pack_start(dot, False, False, 0); dot.show()
         self.mark_dot()
@@ -811,10 +822,36 @@ class Store(Gtk.Window):
             (d.get_style_context().add_class if n == cur else d.get_style_context().remove_class)("active")
 
     def show_slide(self, name, user=False):
+        self.keep_scroll()
         self.slides.set_visible_child_name(name)
         if user:
             self.last_user_slide = time.monotonic()
         self.mark_dot()
+
+    def keep_scroll(self):
+        """While a slide changes, undo any jump of the page the user did not make."""
+        sc = self.slides.get_ancestor(Gtk.ScrolledWindow)
+        if sc is None:
+            return
+        adj = sc.get_vadjustment()
+        state = {"v": adj.get_value()}
+        until = time.monotonic() + 1.2
+
+        def changed(a):
+            now = time.monotonic()
+            v = a.get_value()
+            if now - getattr(self, "last_scroll", 0) < 0.4:
+                state["v"] = v                       # the user is scrolling: follow them
+            elif abs(v - state["v"]) > 40:
+                GLib.idle_add(lambda: a.set_value(state["v"]) or False)
+            return False
+        hid = adj.connect("value-changed", changed)
+
+        def stop():
+            if adj.handler_is_connected(hid):
+                adj.disconnect(hid)
+            return False
+        GLib.timeout_add(int((until - time.monotonic()) * 1000), stop)
 
     def slide(self, step, user=False):
         if not self.slide_names:
