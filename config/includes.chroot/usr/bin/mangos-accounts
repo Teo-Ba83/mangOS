@@ -33,17 +33,14 @@ def launch(cmd):
         pass
 
 
-class Accounts(Gtk.Window):
-    def __init__(self):
-        super().__init__(title=tr("Internet Accounts", "Account Internet"))
-        self.set_default_size(620, -1)
-        self.set_icon_name("gnome-online-accounts-gtk")
-        self.set_position(Gtk.WindowPosition.CENTER)
-        hb = Gtk.HeaderBar(show_close_button=True, title=tr("Internet Accounts", "Account Internet"))
-        self.set_titlebar(hb)
+class Accounts(Gtk.ScrolledWindow):
+    """The panel; in its own window, or inside System Settings (--socket-id)."""
+    def __init__(self, embedded=False):
+        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=not embedded)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
-        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
-        sc.set_max_content_height(600); sc.add(box); self.add(sc)
+        if not embedded:
+            self.set_max_content_height(600)
+        self.add(box)
 
         t = Gtk.Label(label=tr("Calendar and Contacts", "Calendario e Contatti"), xalign=0)
         t.get_style_context().add_class("ac-title"); box.pack_start(t, False, False, 0)
@@ -137,7 +134,16 @@ def main():
     load_css()
     p = Gtk.CssProvider(); p.load_from_data(CSS)
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    w = Accounts(); w.connect("destroy", Gtk.main_quit); w.show_all()
+    sid = next((int(a.split("=", 1)[1]) for a in sys.argv[1:] if a.startswith("--socket-id=")), None)
+    if sid is not None:
+        w = Gtk.Plug.new(sid)                 # embedded in System Settings
+    else:
+        w = Gtk.Window(title=tr("Internet Accounts", "Account Internet"))
+        w.set_default_size(620, -1); w.set_icon_name("gnome-online-accounts-gtk")
+        w.set_position(Gtk.WindowPosition.CENTER)
+        w.set_titlebar(Gtk.HeaderBar(show_close_button=True, title=tr("Internet Accounts", "Account Internet")))
+    w.add(Accounts(embedded=sid is not None))
+    w.connect("destroy", Gtk.main_quit); w.show_all()
     Gtk.main()
 
 
