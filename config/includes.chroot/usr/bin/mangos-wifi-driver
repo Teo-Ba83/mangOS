@@ -1,5 +1,8 @@
 #!/bin/sh
-# Chooses the driver for Broadcom Wi-Fi (MacBook3,1: BCM4321, PCI 14e4:4328).
+# Chooses the driver for Broadcom Wi-Fi: BCM4321 (MacBook3,1 / 4,1, PCI
+# 14e4:4328), BCM4322 (432b), BCM43224 (4353), BCM4331 (4331), the cards of
+# the Intel Macs 2006-2012; wl supports them all. Macs with Atheros Wi-Fi
+# (ath9k, in the kernel) have no Broadcom card: this does nothing there.
 #   wl   proprietary Broadcom STA driver (default, built with DKMS)
 #   b43  open-source driver with the bundled firmware (reserve)
 #

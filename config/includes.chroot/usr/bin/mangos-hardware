@@ -1,0 +1,112 @@
+#!/usr/bin/python3
+"""MangOS hardware report: what this Mac is and which drivers MangOS uses.
+
+usage: mangos-hardware          the report as text (to copy into a message)
+Model and its MangOS status (mangos.macmodels), processor (64-bit?),
+firmware (EFI 32/64-bit or BIOS), graphics and Wi-Fi chips with the driver
+in use, display brightness control, trackpad, sound, fan control, battery.
+About This Computer > System Report shows the same text."""
+import glob, os, re, subprocess, sys
+from mangos import tr, read
+from mangos import macmodels
+
+DRIVER_HINT = {
+    "i915": "Intel (i915)", "nouveau": "NVIDIA (nouveau)", "radeon": "AMD/ATI (radeon)", "amdgpu": "AMD (amdgpu)",
+    "wl": "Broadcom STA (wl)", "b43-pci-bridge": "Broadcom b43 (open)", "bcma-pci-bridge": "Broadcom b43 (open)",
+    "ath9k": "Atheros (ath9k)", "ath5k": "Atheros (ath5k)", "brcmsmac": "Broadcom (brcmsmac)",
+}
+
+
+def pci(classes):
+    """[(description, vendor:device, driver)] for PCI devices of these classes."""
+    out = []
+    try:
+        txt = subprocess.run(["lspci", "-nnk"], capture_output=True, text=True).stdout
+    except OSError:
+        return out
+    blocks = re.split(r"\n(?=\S)", txt)
+    for b in blocks:
+        m = re.match(r"\S+ (.+?) \[(\w{4})\]: (.+) \[(\w{4}:\w{4})\]", b)
+        if not m or not any(m.group(2).startswith(c) for c in classes):
+            continue
+        drv = re.search(r"Kernel driver in use: (\S+)", b)
+        desc = re.sub(r"\s*\(rev \w+\)", "", m.group(3)).replace("Corporation", "").replace("  ", " ")
+        out.append((desc.strip(), m.group(4), drv.group(1) if drv else ""))
+    return out
+
+
+def report():
+    lines = []
+    add = lambda k, v: lines.append(f"{k:<18} {v}")
+    prod = read("/sys/class/dmi/id/product_name")
+    m = macmodels.lookup(prod)
+    if m:
+        st = macmodels.STATUS[m.status]
+        add(tr("Model", "Modello"), f"{macmodels.name(m, tr)}  [{m.id}]")
+        add(tr("MangOS support", "Supporto MangOS"), f"{st[2]} {tr(st[0], st[1])}")
+        if m.note in macmodels.NOTES:
+            add("", tr(*macmodels.NOTES[m.note]))
+    else:
+        add(tr("Model", "Modello"), " ".join(x for x in (read("/sys/class/dmi/id/sys_vendor"), prod) if x) or "?")
+        add(tr("MangOS support", "Supporto MangOS"), tr("not in the list of Intel Macs 2006-2012",
+                                                         "non nell'elenco dei Mac Intel 2006-2012"))
+    cpu = read("/proc/cpuinfo")
+    name = re.search(r"model name\s*:\s*(.+)", cpu)
+    flags = set((re.search(r"^flags\s*:\s*(.+)$", cpu, re.M) or [None, ""])[1].split())
+    add(tr("Processor", "Processore"), (re.sub(r"\s+", " ", name.group(1)) if name else "?") +
+        f"  ({cpu.count('processor' + chr(9) + ':')} core, " + ("64-bit" if "lm" in flags else "32-bit") + ")")
+    mem = re.search(r"MemTotal:\s+(\d+)", read("/proc/meminfo"))
+    add(tr("Memory", "Memoria"), f"{int(mem.group(1)) / 1024 / 1024:.1f} GB" if mem else "?")
+    size = read("/sys/firmware/efi/fw_platform_size")
+    add("Firmware", f"EFI {size}-bit" if size else ("EFI" if os.path.isdir("/sys/firmware/efi") else "BIOS / Boot Camp"))
+    add(tr("Kernel", "Kernel"), os.uname().release)
+
+    gpus = pci(("0300", "0302", "0380"))
+    for i, (d, ids, drv) in enumerate(gpus):
+        add(tr("Graphics", "Grafica") if i == 0 else "", f"{d} [{ids}] -> {DRIVER_HINT.get(drv, drv or tr('no driver', 'nessun driver'))}")
+    if not gpus:
+        add(tr("Graphics", "Grafica"), tr("not found", "non trovata"))
+    try:
+        gl = subprocess.run(["glxinfo", "-B"], capture_output=True, text=True, timeout=8).stdout
+        r = re.search(r"OpenGL renderer string: (.*)", gl); v = re.search(r"OpenGL version string: (\S+)", gl)
+        if r:
+            add("OpenGL", f"{v.group(1) if v else '?'}  ({r.group(1).strip()})")
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    nets = pci(("0280",))
+    for i, (d, ids, drv) in enumerate(nets):
+        add("Wi-Fi" if i == 0 else "", f"{d} [{ids}] -> {DRIVER_HINT.get(drv, drv or tr('no driver', 'nessun driver'))}")
+    if not nets:
+        add("Wi-Fi", tr("not found", "non trovata"))
+    eth = pci(("0200",))
+    for d, ids, drv in eth[:1]:
+        add("Ethernet", f"{d} [{ids}] -> {drv or tr('no driver', 'nessun driver')}")
+
+    bl = [os.path.basename(p) for p in glob.glob("/sys/class/backlight/*")]
+    add(tr("Brightness", "Luminosità"), ", ".join(bl) if bl else tr("no control found", "nessun controllo trovato"))
+    devs = read("/proc/bus/input/devices")
+    pad = next((n for n in ("bcm5974", "appletouch") if n in devs), None)
+    if not pad and re.search(r'N: Name=".*(Touchpad|Trackpad)', devs, re.I):
+        pad = "touchpad"
+    add("Trackpad", pad or tr("none (desktop Mac?)", "nessuno (Mac da scrivania?)"))
+    codec = read("/proc/asound/card0/codec#0").splitlines()[:1]
+    add(tr("Sound", "Audio"), codec[0].replace("Codec: ", "") if codec else
+        (read("/proc/asound/cards").splitlines() or ["?"])[0].strip())
+    smc = os.path.isdir("/sys/devices/platform/applesmc.768")
+    add(tr("Fans", "Ventole"), tr("Apple SMC found (mbpfan controls the fans)", "Apple SMC trovato (mbpfan regola le ventole)")
+        if smc else tr("Apple SMC not found", "Apple SMC non trovato"))
+    bat = glob.glob("/sys/class/power_supply/BAT*")
+    if bat:
+        cap = read(bat[0] + "/capacity")
+        full, design = read(bat[0] + "/charge_full") or read(bat[0] + "/energy_full"), \
+            read(bat[0] + "/charge_full_design") or read(bat[0] + "/energy_full_design")
+        health = f", {tr('health', 'salute')} {round(100 * int(full) / int(design))}%" if full and design and int(design) else ""
+        add(tr("Battery", "Batteria"), f"{cap}%{health}")
+    osr = dict(l.split("=", 1) for l in read("/etc/os-release").splitlines() if "=" in l)
+    add("MangOS", osr.get("VERSION", "").strip('"') + "  (" + (read("/etc/mangos/update-channel") or "stable") + ")")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    print(report())

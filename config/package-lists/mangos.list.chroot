@@ -251,3 +251,9 @@ gnome-contacts
 gnome-online-accounts-gtk
 gir1.2-secret-1
 qrencode
+
+# Other Intel Macs 2006-2012: X drivers for NVIDIA (nouveau: GeForce 7300 GT
+# to GT 650M) and ATI/AMD (radeon: X1600 to HD 6970M). Intel GMA 950 / X3100 /
+# HD use xserver-xorg-video-intel (above); Atheros Wi-Fi (ath9k) is in the kernel.
+xserver-xorg-video-nouveau
+xserver-xorg-video-ati

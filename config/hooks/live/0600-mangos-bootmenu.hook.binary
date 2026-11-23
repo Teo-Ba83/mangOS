@@ -14,6 +14,25 @@ if [ -f boot/grub/grub.cfg ]; then
     mv boot/grub/grub.cfg.new boot/grub/grub.cfg
     sed -i 's|^\(\s*linux\s.*boot=live.*\)$|\1 ${mangos_efi32}|' boot/grub/grub.cfg
   fi
+  # 2006 Macs with a Core Duo / Core Solo have a 32-bit processor: the 64-bit
+  # kernel would stop with a cryptic error. Say so plainly instead.
+  if ! grep -q mangos_cpu64 boot/grub/grub.cfg; then
+    { cat <<'G'
+# mangos_cpu64: refuse 32-bit processors with a clear message
+insmod cpuid
+if ! cpuid -l; then
+  echo "This Mac has a 32-bit processor (Intel Core Duo / Core Solo, 2006)."
+  echo "MangOS needs a 64-bit processor (Core 2 Duo or newer)."
+  echo ""
+  echo "Questo Mac ha un processore a 32 bit (Intel Core Duo / Core Solo, 2006)."
+  echo "MangOS richiede un processore a 64 bit (Core 2 Duo o successivo)."
+  sleep --interruptible 3600
+  halt
+fi
+G
+      cat boot/grub/grub.cfg; } > boot/grub/grub.cfg.new
+    mv boot/grub/grub.cfg.new boot/grub/grub.cfg
+  fi
   # Extra entries copied from the first one: Italian, and Wi-Fi with b43
   python3 - boot/grub/grub.cfg "$IT" <<'PY'
 import re, sys

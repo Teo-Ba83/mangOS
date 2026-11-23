@@ -4,7 +4,8 @@
 
 A Debian 13 (trixie) based system that looks and feels as close as possible
 to macOS, built to give a 2007 polycarbonate MacBook (A1181, Core 2 Duo,
-4 GB RAM) a second life. Light enough for old Intel graphics, with the
+4 GB RAM) a second life, and the other Intel Macs from 2006 to 2012 with it
+(one image for all: [which Macs](docs/MAC-MODELS.md)). Light enough for old Intel graphics, with the
 ArtCraft creative apps preinstalled.
 
 | | |
@@ -20,7 +21,9 @@ ArtCraft creative apps preinstalled.
 | Trackpad | tap to click, natural scrolling, two-finger right click |
 | Wi-Fi | Broadcom BCM4321 (MacBook3,1 and 4,1): `wl` driver prebuilt with DKMS (offline); `b43` + firmware as reserve; *Wi-Fi Check* tool |
 | Apps | ArtCraft launcher, WordCraft, PdfCraft, PhotoCraft, Firefox ESR, VLC |
-| Store | MangOS Store: 2,000+ Debian apps from the AppStream catalog, Mac-style layout, Get/Open, updates |
+| Store | Mango Store: Debian + Flathub in one catalog, Mac-style layout, Get/Open, updates, "Light / Medium / Heavy" and "Not compatible with this Mac" labels |
+| Mac apps | Notes, Passwords (keychain + Wi-Fi), Calendar and Contacts (Google, iCloud), Notification Center on the clock, Backup (Time Machine-style) |
+| Other Macs | Intel Macs 2006-2012: Intel, NVIDIA and ATI/AMD graphics, Broadcom and Atheros Wi-Fi, 32-bit EFI; About This Computer > System Report for testers ([table](docs/MAC-MODELS.md)) |
 | Installer | Calamares with a macOS-installer style theme; BIOS, EFI64 and **EFI32** |
 | Languages | English default, Italian included; more from *Settings > Language* |
 

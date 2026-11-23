@@ -4,6 +4,7 @@ import os, re, subprocess, gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GdkPixbuf
 from mangos import tr, read, os_release, load_css
+from mangos import macmodels
 
 def cpu():
     m = re.search(r"model name\s*:\s*(.+)", read("/proc/cpuinfo"))
@@ -34,6 +35,9 @@ def disk():
     return tr(f"{free:.0f} GB available of {total:.0f} GB", f"{free:.0f} GB disponibili su {total:.0f} GB")
 
 def model():
+    m = macmodels.this_mac()
+    if m:
+        return macmodels.name(m, tr)
     vendor = read("/sys/class/dmi/id/sys_vendor")
     prod = read("/sys/class/dmi/id/product_name")
     return " ".join(x for x in (vendor, prod) if x) or tr("Unknown", "Sconosciuto")
@@ -66,12 +70,47 @@ class About(Gtk.Window):
         right.pack_start(grid, False, False, 0)
         bb = Gtk.Box(spacing=8, margin_top=16)
         more = Gtk.Button(label=tr("System Report…", "Resoconto di sistema…"))
-        more.connect("clicked", lambda *_: subprocess.Popen(["xfce4-taskmanager"]))
+        more.connect("clicked", lambda *_: self.system_report())
         upd = Gtk.Button(label=tr("Software Update…", "Aggiornamento software…"))
         upd.connect("clicked", lambda *_: subprocess.Popen(["mangos-update"]))
         bb.pack_start(more, False, False, 0); bb.pack_start(upd, False, False, 0)
         right.pack_start(bb, False, False, 0)
+        m = macmodels.this_mac()
+        if m:
+            st = macmodels.STATUS[m.status]
+            sl = Gtk.Label(label=f"{st[2]} MangOS: {tr(st[0], st[1])}", xalign=0, margin_top=8)
+            sl.get_style_context().add_class("mangos-subtitle")
+            right.pack_start(sl, False, False, 0)
+            right.reorder_child(sl, 2)
         self.connect("destroy", Gtk.main_quit)
         self.connect("show", lambda *_: more.grab_focus())
+
+    def system_report(self):
+        """The hardware report (mangos-hardware), easy to copy into a message."""
+        try:
+            text = subprocess.run(["mangos-hardware"], capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            text = "?"
+        d = Gtk.Dialog(title=tr("System Report", "Resoconto di sistema"), transient_for=self, modal=True)
+        d.set_default_size(720, 460)
+        d.add_buttons(tr("Activity Monitor", "Monitoraggio Attività"), 1, tr("Copy", "Copia"), 2,
+                      tr("Close", "Chiudi"), Gtk.ResponseType.CLOSE)
+        tv = Gtk.TextView(editable=False, monospace=True, left_margin=12, top_margin=10, cursor_visible=False)
+        css = Gtk.CssProvider(); css.load_from_data(b"textview { font-family: 'Noto Mono', 'DejaVu Sans Mono', monospace; font-size: 12px; }")
+        tv.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+        tv.get_buffer().set_text(text)
+        sc = Gtk.ScrolledWindow(vexpand=True); sc.add(tv)
+        d.get_content_area().pack_start(sc, True, True, 0)
+        d.show_all()
+        while True:
+            r = d.run()
+            if r == 2:
+                from gi.repository import Gdk
+                Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
+            elif r == 1:
+                subprocess.Popen(["xfce4-taskmanager"])
+            else:
+                break
+        d.destroy()
 
 load_css(); About().show_all(); Gtk.main()

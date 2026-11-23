@@ -96,3 +96,6 @@ scripts/test-vm.sh uefi32                      # 32-bit EFI (apt install ovmf-ia
 scripts/test-vm.sh bios
 DISK=/var/tmp/t.qcow2 scripts/test-vm.sh install
 ```
+| Other Macs | Model table (67 Intel Macs 2006-2012) with status in About This Computer; System Report (model, CPU, EFI, GPU / Wi-Fi with driver, brightness, trackpad, sound, fans, battery) | ✅ in VM | [System Report](screenshots/72-system-report-it.png); lspci parsing checked with MacBook GM965 + GeForce 9400M + BCM4321 output; [table](MAC-MODELS.md) |
+| Other Macs | Boot menu refuses 32-bit processors (Core Duo 2006) with a clear message | ✅ in QEMU, 32-bit EFI | [qemu32 CPU: message](screenshots/70-boot-32bit-cpu-refused.png) · [Core 2 Duo: starts](screenshots/71-boot-64bit-cpu-ok.png) |
+| Other Macs | NVIDIA / ATI graphics, Atheros Wi-Fi on real machines | ⚠️ not tried | drivers in the image (nouveau, radeon + firmware, ath9k); waiting for testers' System Reports |
