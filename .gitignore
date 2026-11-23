@@ -1,3 +1,7 @@
 /build/
 /out/
 *.iso
+
+# Python bytecode never goes into the image
+__pycache__/
+*.pyc
