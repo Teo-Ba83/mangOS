@@ -92,8 +92,8 @@ _T = [
 MODELS = {r[0]: Model(*r) for r in _T}
 
 NOTES = {
-    "efi32": ("32-bit EFI firmware: started through MangOS's 32-bit GRUB, with EFI runtime services off.",
-              "Firmware EFI a 32 bit: si avvia con il GRUB a 32 bit di MangOS, senza i servizi runtime EFI."),
+    "efi32": ("32-bit EFI firmware: use the MangOS EFI32 image (MangOS-<version>-efi32.iso).",
+              "Firmware EFI a 32 bit: usa l'immagine MangOS EFI32 (MangOS-<versione>-efi32.iso)."),
     "dualgpu": ("Two NVIDIA graphics chips: MangOS uses the one chosen in macOS's Energy Saver (9400M by default).",
                 "Due chip grafici NVIDIA: MangOS usa quello scelto in macOS in Risparmio Energia (di base la 9400M)."),
     "gmux": ("Switchable graphics (Intel + NVIDIA): the screen is driven by the chip active at startup.",
@@ -127,12 +127,20 @@ def name(m, tr):
     return f"{m.family} ({tr(m.year_en, m.year_it)})"
 
 
+def image(m):
+    """Which MangOS image starts this Mac: 'efi32', 'amd64' or None."""
+    if not m.cpu64:
+        return None
+    return "efi32" if m.efi == 32 else "amd64"
+
+
 def markdown():
-    out = ["| Model | Identifier | 64-bit CPU | EFI | Graphics | Wi-Fi | Status | Notes |",
-           "|---|---|---|---|---|---|---|---|"]
+    out = ["| Model | Identifier | Image | 64-bit CPU | EFI | Graphics | Wi-Fi | Status | Notes |",
+           "|---|---|---|---|---|---|---|---|---|"]
     for m in MODELS.values():
         st = STATUS[m.status]
-        out.append(f"| {m.family} ({m.year_en}) | `{m.id}` | {'yes' if m.cpu64 else '**no**'} | {m.efi}-bit | "
+        img = {"efi32": "**EFI32**", "amd64": "amd64", None: "—"}[image(m)]
+        out.append(f"| {m.family} ({m.year_en}) | `{m.id}` | {img} | {'yes' if m.cpu64 else '**no**'} | {m.efi}-bit | "
                    f"{m.graphics} | {m.wifi} | {st[2]} {st[0]} | {NOTES.get(m.note, ('',))[0]} |")
     return "\n".join(out)
 

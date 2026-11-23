@@ -1,9 +1,15 @@
 # Writing MangOS to a USB stick and booting the MacBook
 
+> **Which image?** `MangOS-<version>-amd64.iso` for Macs from late 2007 to
+> 2012 (64-bit EFI); `MangOS-<version>-efi32.iso` for the 2006-2007 Macs with
+> 32-bit EFI (MacBook2,1, MacBook Pro 2,1 / 2,2, iMac 5,1 / 5,2 / 6,1,
+> Mac mini 2,1, Mac Pro 1,1 / 2,1). [Full list](MAC-MODELS.md). The examples
+> below use the amd64 one: for the other, change the file name.
+
 ## 1. Check the download
 
 ```sh
-sha256sum -c MangOS-0.2.0-amd64.iso.sha256
+sha256sum -c MangOS-0.2.0-amd64.iso.sha256    # or MangOS-0.2.0-efi32.iso.sha256
 ```
 It must print `MangOS-0.2.0-amd64.iso: OK`.
 

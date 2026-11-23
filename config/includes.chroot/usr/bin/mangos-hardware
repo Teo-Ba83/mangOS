@@ -59,6 +59,9 @@ def report():
     add(tr("Memory", "Memoria"), f"{int(mem.group(1)) / 1024 / 1024:.1f} GB" if mem else "?")
     size = read("/sys/firmware/efi/fw_platform_size")
     add("Firmware", f"EFI {size}-bit" if size else ("EFI" if os.path.isdir("/sys/firmware/efi") else "BIOS / Boot Camp"))
+    if m and macmodels.image(m):
+        add(tr("MangOS image", "Immagine MangOS"), "MangOS EFI32 (efi32.iso)" if macmodels.image(m) == "efi32"
+            else "MangOS (amd64.iso)")
     add(tr("Kernel", "Kernel"), os.uname().release)
 
     gpus = pci(("0300", "0302", "0380"))

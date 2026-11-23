@@ -57,11 +57,14 @@ jobs:
             scripts/buildenv.sh build --clean 2>&1 | tee build.log | grep --line-buffered -E '==>|^E: |^W: .*[Ll]ocal packages|ERROR|WARNING|ArtCraft|MangOS system|mangos-system|sha256|b43 firmware|wl for|craft'
           sudo chown -R "$(id -u):$(id -g)" out   # built as root; later steps run as the runner user
           ls -la out/
-          size=$(stat -c %s out/MangOS-*.iso)
-          echo "ISO size: $size bytes"
-          if [ "$size" -ge 2147483648 ]; then
-            echo "::error::The ISO is larger than 2 GiB, the limit for a GitHub release file"; exit 1
-          fi
+          for iso in out/MangOS-*.iso; do
+            size=$(stat -c %s "$iso")
+            echo "$(basename "$iso"): $size bytes"
+            if [ "$size" -ge 2147483648 ]; then
+              echo "::error::$iso is larger than 2 GiB, the limit for a GitHub release file"; exit 1
+            fi
+          done
+          test -e out/MangOS-*-amd64.iso && test -e out/MangOS-*-efi32.iso
 
       - name: Show the end of the build log (on failure)
         if: failure()
@@ -98,8 +101,13 @@ jobs:
           {
             echo "MangOS ${MANGOS_VERSION}, build #${{ github.run_number }} (system package \`$(cat out/mangos-system.version)\`)."
             echo
-            echo "**New installation:** download \`MangOS-${MANGOS_VERSION}-amd64.iso\`, check it against the \`.sha256\` file,"
+            echo "**New installation:** download the image for your Mac, check it against its \`.sha256\` file,"
             echo "write it to a USB stick (balenaEtcher works on Windows and macOS) and start the Mac holding Option."
+            echo
+            echo "- \`MangOS-${MANGOS_VERSION}-amd64.iso\`: Macs from late 2007 to 2012 (64-bit EFI)"
+            echo "- \`MangOS-${MANGOS_VERSION}-efi32.iso\`: 2006-2007 Macs with 32-bit EFI (MacBook2,1, MacBook Pro 2,x,"
+            echo "  iMac 5,x / 6,1, Mac mini 2,1, Mac Pro 1,1 / 2,1). Which one: see docs/MAC-MODELS.md."
+            echo "  The installed system and its updates are the same for both."
             echo
             echo "**Beta build.** Macs on the beta channel get it automatically; it reaches everyone (stable"
             echo "channel) when promoted. Updates are signed with Sigstore by the MangOS build workflow."

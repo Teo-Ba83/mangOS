@@ -1,7 +1,9 @@
 #!/bin/bash
 # MangOS: one reproducible build script that produces the final ISO.
 #
-#   sudo ./build.sh            build out/MangOS-<version>-amd64.iso (+ .sha256)
+#   sudo ./build.sh            build out/MangOS-<version>-amd64.iso (Macs with
+#                              64-bit EFI, PCs) and out/MangOS-<version>-efi32.iso
+#                              (2006-2007 Macs with 32-bit EFI), + .sha256
 #   sudo ./build.sh --clean    wipe the work directory first (full rebuild)
 #
 # Must run as root on Debian 13 (trixie) with live-build installed. On any
@@ -136,11 +138,15 @@ log "lb binary"
 lb binary
 
 ISO=$(ls -t "$WORK"/*.iso | head -1)
+# Two images from the one live-build made: 64-bit EFI Macs (and PCs), and the
+# 2006-2007 Macs with 32-bit EFI. Same system inside, different start-up files.
+log "Making the amd64 and efi32 editions"
+rm -f "$OUT"/MangOS-*.iso "$OUT"/MangOS-*.iso.sha256
+"$ROOT/scripts/make-editions.sh" "$ISO" "$OUT" "$MANGOS_VERSION"
+rm -f "$ISO"
 NAME="MangOS-$MANGOS_VERSION-amd64.iso"
-mv "$ISO" "$OUT/$NAME"
-(cd "$OUT" && sha256sum "$NAME" > "$NAME.sha256")
 # Web update files (fixed names, so .../releases/latest/download/<name> works)
 cp "$WORK/config/packages.chroot/mangos-system_${PKG_VERSION}_all.deb" "$OUT/mangos-system.deb"
 echo "$PKG_VERSION" > "$OUT/mangos-system.version"
-log "Done: $OUT/$NAME"
-cat "$OUT/$NAME.sha256"
+log "Done: $OUT/$NAME and $OUT/MangOS-$MANGOS_VERSION-efi32.iso"
+cat "$OUT"/MangOS-*.iso.sha256
