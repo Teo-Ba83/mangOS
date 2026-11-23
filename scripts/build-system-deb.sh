@@ -35,6 +35,10 @@ MANGOS_SIGNER_ISSUER=https://token.actions.githubusercontent.com
 MANGOS_AUTO_UPDATE=yes
 CONF
 
+# When this build was made: "What's new" after an update shows the changes
+# written after the build the computer had before.
+printf 'VERSION=%s\nBUILD_TIME=%s\n' "$VER" "$(date -u +%Y-%m-%dT%H:%M:%S)" > "$STAGE/usr/share/mangos/build-info"
+
 # Depends: the image's packages, minus the live-session and installer tools
 # that the installer removes from the installed system.
 EXCLUDE=' live-boot live-config live-config-systemd live-tools user-setup calamares calamares-settings-debian squashfs-tools '
@@ -57,6 +61,7 @@ Description: MangOS system: look, settings, tools and web updates
  settings, Broadcom Wi-Fi setup, and the signed web updater.
 CTL
 install -m755 "$HERE/../packaging/mangos-system/postinst" "$STAGE/DEBIAN/postinst"
+install -m755 "$HERE/../packaging/mangos-system/preinst" "$STAGE/DEBIAN/preinst"
 
 mkdir -p "$OUT"
 DEB="$OUT/mangos-system_${VER}_all.deb"

@@ -82,6 +82,10 @@ class Update(Gtk.Box):
         crow = Gtk.Box(spacing=10)
         crow.pack_start(chk, False, False, 0)
         crow.pack_start(self.spinner, False, False, 0)
+        news = Gtk.Button(label=tr("What's New…", "Novità…"))
+        news.set_tooltip_text(tr("What the last updates brought", "Cosa hanno portato gli ultimi aggiornamenti"))
+        news.connect("clicked", lambda *_: subprocess.Popen(["mangos-whats-new"]))
+        crow.pack_end(news, False, False, 0)
         self.box.pack_start(crow, False, False, 0)
 
         # channel

@@ -1,0 +1,149 @@
+#!/usr/bin/python3
+"""What's new in MangOS: shown after an update, beta or stable.
+
+usage: mangos-whats-new             what the last update brought
+       mangos-whats-new --pending   only if this user has not seen it yet
+                                    (at login, and right after an update)
+       mangos-whats-new --all       every change, newest first
+The list is /usr/share/mangos/whats-new.txt (one block per change set, with
+the time it was written). The package's preinst/postinst record which build
+the computer had before (/var/lib/mangos/updater/last-update): only blocks
+newer than that build are shown."""
+import datetime, os, re, subprocess, sys
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gtk
+from mangos import tr, load_css, read
+
+NEWS = "/usr/share/mangos/whats-new.txt"
+LAST = "/var/lib/mangos/updater/last-update"
+SEEN = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos", "news-seen")
+
+CSS = b"""
+.wn-title { font-size: 22px; font-weight: 800; }
+.wn-sub { opacity: .6; }
+.wn-date { font-size: 11px; font-weight: 800; opacity: .5; margin-top: 8px; }
+.wn-item { font-size: 13px; }
+.wn-dot { color: #FF9F0A; font-weight: 900; }
+"""
+
+
+def blocks():
+    """[(datetime-string 'YYYY-MM-DDTHH:MM', [(en, it), ...])], newest first."""
+    out, cur, en = [], None, None
+    for line in read(NEWS).splitlines():
+        line = line.strip()
+        m = re.match(r"^## (\d{4}-\d\d-\d\d)[ T](\d\d:\d\d)", line)
+        if m:
+            cur = (f"{m.group(1)}T{m.group(2)}", []); out.append(cur); en = None
+        elif cur and line.startswith("en:"):
+            en = line[3:].strip()
+        elif cur and line.startswith("it:"):
+            cur[1].append((en or line[3:].strip(), line[3:].strip())); en = None
+    return sorted(out, key=lambda b: b[0], reverse=True)
+
+
+def last_update():
+    return dict(l.split("=", 1) for l in read(LAST).splitlines() if "=" in l)
+
+
+def nice(v):
+    base, _, b = (v or "").partition("+")
+    return f"{base} ({b.replace('build.', 'build ')})" if b else base
+
+
+def installed():
+    try:
+        return subprocess.run(["dpkg-query", "-W", "-f=${Version}", "mangos-system"],
+                              capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return ""
+
+
+def when(stamp):
+    d = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M").replace(tzinfo=datetime.timezone.utc).astimezone()
+    return d.strftime("%e %B %Y").strip()
+
+
+class News(Gtk.Window):
+    def __init__(self, items, title, sub):
+        super().__init__(title=tr("What's New", "Novità"))
+        self.set_default_size(560, -1); self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("mangos-logo"); self.set_keep_above(True)
+        self.set_titlebar(Gtk.HeaderBar(show_close_button=True, title=tr("What's New", "Novità")))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=22)
+        top = Gtk.Box(spacing=14)
+        img = Gtk.Image.new_from_icon_name("mangos-logo", Gtk.IconSize.DIALOG); img.set_pixel_size(56)
+        top.pack_start(img, False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        t = Gtk.Label(label=title, xalign=0, wrap=True); t.get_style_context().add_class("wn-title")
+        s = Gtk.Label(label=sub, xalign=0, wrap=True); s.get_style_context().add_class("wn-sub")
+        tb.pack_start(t, False, False, 0); tb.pack_start(s, False, False, 0)
+        top.pack_start(tb, True, True, 0)
+        box.pack_start(top, False, False, 4)
+        lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        days = {when(stamp) for stamp, _ in items}
+        shown = None
+        for stamp, pairs in items:
+            if len(days) > 1 and when(stamp) != shown:      # one heading per day
+                shown = when(stamp)
+                d = Gtk.Label(label=shown.upper(), xalign=0); d.get_style_context().add_class("wn-date")
+                lst.pack_start(d, False, False, 0)
+            for en, it in pairs:
+                row = Gtk.Box(spacing=8)
+                dot = Gtk.Label(label="•", valign=Gtk.Align.START); dot.get_style_context().add_class("wn-dot")
+                txt = Gtk.Label(label=tr(en, it), xalign=0, wrap=True, max_width_chars=60)
+                txt.get_style_context().add_class("wn-item")
+                row.pack_start(dot, False, False, 0); row.pack_start(txt, True, True, 0)
+                lst.pack_start(row, False, False, 0)
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        sc.set_max_content_height(420); sc.add(lst)
+        box.pack_start(sc, True, True, 0)
+        ok = Gtk.Button(label=tr("Continue", "Continua"), halign=Gtk.Align.END, margin_top=10)
+        ok.get_style_context().add_class("suggested-action")
+        ok.connect("clicked", lambda *_: self.destroy())
+        box.pack_start(ok, False, False, 0)
+        self.add(box)
+
+
+def main():
+    args = sys.argv[1:]
+    allb = blocks()
+    last = last_update()
+    if "--all" in args:
+        items = allb
+        title, sub = tr("What's new in MangOS", "Le novità di MangOS"), tr("All changes, newest first.",
+                                                                          "Tutte le novità, dalla più recente.")
+    else:
+        if "--pending" in args:
+            if not last or last.get("version") != installed() or read(SEEN) == last.get("version"):
+                return 0
+        since = last.get("since", "")
+        items = [b for b in allb if since and b[0] > since[:16]] if last.get("version") == installed() else []
+        if not items:
+            items = allb[:1]
+        title = tr("MangOS was updated", "MangOS è stato aggiornato") if last.get("version") == installed() \
+            else tr("What's new in MangOS", "Le novità di MangOS")
+        frm = last.get("from", "")
+        sub = (tr(f"Version {nice(installed())}", f"Versione {nice(installed())}") +
+               (tr(f" (you had {nice(frm)}). Here is what changed:", f" (avevi la {nice(frm)}). Ecco cosa è cambiato:")
+                if frm and last.get("version") == installed() else "."))
+        if last.get("version"):
+            try:
+                os.makedirs(os.path.dirname(SEEN), exist_ok=True)
+                open(SEEN, "w").write(last["version"])
+            except OSError:
+                pass
+    if not items:
+        return 0
+    load_css()
+    p = Gtk.CssProvider(); p.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = News(items, title, sub); w.connect("destroy", Gtk.main_quit); w.show_all()
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

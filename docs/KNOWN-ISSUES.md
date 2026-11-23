@@ -139,6 +139,20 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 - Removing a program from the package list does not uninstall it from
   machines that already have it.
 
+### What's new
+
+- After every update (beta or stable) MangOS shows **What's New**: the
+  changes since the build the computer had before, right away if someone
+  is logged in, otherwise at the next login, once per user. Software
+  Update > What's New… shows it again.
+- The text is /usr/share/mangos/whats-new.txt, written by hand for users
+  with every change (English and Italian). Each block carries the time it
+  was written; the package's preinst records when the replaced build was
+  made (/usr/share/mangos/build-info, or the time of its files for builds
+  before this feature).
+- The MangOS updater installs updates automatically in the background on
+  both channels (MANGOS_AUTO_UPDATE=yes in /etc/mangos/updates.conf).
+
 ## Store
 
 - The Store shows the apps of Debian's AppStream catalog. The catalog and

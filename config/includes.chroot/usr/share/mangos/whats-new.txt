@@ -1,0 +1,47 @@
+# MangOS: what's new (shown after an update by mangos-whats-new).
+# Newest first. One block per change set: "## <UTC date and time it was
+# written, YYYY-MM-DD HH:MM>" (never later than its commit: a block dated
+# after a build started would be shown again at the next update), then pairs of "en:" / "it:" lines, one item
+# each, written for users (what they can now do), not for developers.
+# After an update, only the blocks newer than the build the computer had
+# before are shown.
+
+## 2026-11-23 23:47
+en: After every update, MangOS tells you what is new (this window). Software Update > What's New shows it again.
+it: Dopo ogni aggiornamento MangOS ti dice cosa c'è di nuovo (questa finestra). Aggiornamento software > Novità la mostra di nuovo.
+
+## 2026-11-23 23:44
+en: MangOS now runs on the other Intel Macs from 2006 to 2012: NVIDIA and ATI/AMD graphics, Atheros Wi-Fi.
+it: MangOS ora funziona anche sugli altri Mac Intel dal 2006 al 2012: grafica NVIDIA e ATI/AMD, Wi-Fi Atheros.
+en: About This Computer shows your Mac's name and whether MangOS has been tested on it.
+it: Informazioni su questo computer mostra il nome del tuo Mac e se MangOS è stato provato su quel modello.
+en: About This Computer > System Report: the hardware and drivers in use, ready to copy.
+it: Informazioni su questo computer > Resoconto di sistema: hardware e driver in uso, pronto da copiare.
+
+## 2026-11-23 23:31
+en: Mango Store: the sliding banner no longer brings the page back to the top while you scroll.
+it: Mango Store: il banner che scorre non riporta più la pagina in alto mentre scorri.
+
+## 2026-11-23 23:18
+en: System Settings > Software Update shows the panel right away, with "Receive beta versions".
+it: Impostazioni > Aggiornamento software mostra subito il pannello, con "Ricevi le versioni beta".
+en: Internet Accounts also opens inside System Settings.
+it: Anche Account Internet si apre dentro Impostazioni.
+
+## 2026-11-23 20:29
+en: New Notes app: folders, checklists, saved automatically, optional sync through a synced folder.
+it: Nuova app Note: cartelle, elenchi di controllo, salvataggio automatico, sincronizzazione facoltativa con una cartella sincronizzata.
+en: New Passwords app: saved passwords and Wi-Fi networks, share a Wi-Fi network with a QR code.
+it: Nuova app Password: password salvate e reti Wi-Fi, condivisione di una rete Wi-Fi con un codice QR.
+en: Calendar and Contacts, with Google and iCloud accounts (Settings > Internet Accounts).
+it: Calendario e Contatti, con gli account Google e iCloud (Impostazioni > Account Internet).
+en: Notification Center: click the date and time in the top bar.
+it: Centro notifiche: clicca sulla data e l'ora in alto.
+en: Mango Store: "Light / Medium / Heavy" on every app, and "Not compatible with this Mac" when an app cannot run here.
+it: Mango Store: "Leggera / Media / Pesante" su ogni app, e "Non compatibile con questo Mac" quando un'app qui non può funzionare.
+
+## 2026-11-23 20:09
+en: MangOS 0.2.0: stable and beta update channels (Settings > Software Update > Receive beta versions).
+it: MangOS 0.2.0: canali di aggiornamento stabile e beta (Impostazioni > Aggiornamento software > Ricevi le versioni beta).
+en: "Go Back to the Previous Version" in Software Update, if an update gives you trouble.
+it: "Torna alla versione precedente" in Aggiornamento software, se un aggiornamento ti dà problemi.

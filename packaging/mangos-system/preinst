@@ -1,0 +1,12 @@
+#!/bin/sh
+# mangos-system: before an update, remember when the build being replaced was
+# made, so that "What's new" shows only what came after it.
+set -e
+if [ "$1" = upgrade ] && [ -n "${2:-}" ]; then
+  st=/var/lib/mangos/updater; mkdir -p "$st"
+  since=$(sed -n 's/^BUILD_TIME=//p' /usr/share/mangos/build-info 2>/dev/null || true)
+  # builds before 0.2 had no build-info: their files carry the build's time
+  [ -n "$since" ] || since=$(date -u -r /usr/lib/mangos/mangos-updater +%Y-%m-%dT%H:%M:%S 2>/dev/null || true)
+  printf 'from=%s\nsince=%s\n' "$2" "$since" > "$st/news-pending"
+fi
+exit 0

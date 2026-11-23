@@ -12,5 +12,27 @@ if [ "$1" = configure ]; then
   if [ -e /boot/grub/grub.cfg ] && command -v update-grub >/dev/null; then
     update-grub >/dev/null 2>&1 || echo "mangos-system: update-grub failed" >&2
   fi
+  # "What's new": record the update (preinst saved the build replaced) and
+  # show it now to whoever is logged in; the others see it at their next login.
+  st=/var/lib/mangos/updater
+  if [ -n "${2:-}" ] && [ -e "$st/news-pending" ]; then
+    new=$(dpkg-query -W -f='${Version}' mangos-system 2>/dev/null || true)
+    if [ -n "$new" ] && dpkg --compare-versions "$new" gt "$2"; then
+      { echo "version=$new"; cat "$st/news-pending"; echo "time=$(date -u +%Y-%m-%dT%H:%M:%S)"; } > "$st/last-update"
+      for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '$1 >= 1000 {print $1}'); do
+        user=$(id -nu "$uid" 2>/dev/null) || continue
+        xa="$(getent passwd "$user" | cut -d: -f6)/.Xauthority"
+        # started by the user's own systemd, so it outlives the updater service
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+          DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+          systemd-run --user --quiet --no-block --setenv=DISPLAY=:0 --setenv=XAUTHORITY="$xa" \
+          sh -c 'sleep 3; exec mangos-whats-new --pending' >/dev/null 2>&1 < /dev/null ||
+        runuser -u "$user" -- env DISPLAY=:0 XAUTHORITY="$xa" \
+          DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+          setsid -f sh -c 'sleep 3; exec mangos-whats-new --pending' >/dev/null 2>&1 < /dev/null || true
+      done
+    fi
+    rm -f "$st/news-pending"
+  fi
 fi
 exit 0

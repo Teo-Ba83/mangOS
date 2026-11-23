@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MangOS What's New
+Name[it]=Novità di MangOS
+Comment=After an update, what it brought (once)
+Exec=sh -c "sleep 8; exec mangos-whats-new --pending"
+Icon=mangos-logo
+NoDisplay=true
+OnlyShowIn=XFCE;
