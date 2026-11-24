@@ -18,10 +18,11 @@ ArtCraft creative apps preinstalled.
 | `MangOS-<version>-efi32.iso` | 2006-2007 Macs with 32-bit EFI (MacBook2,1, MacBook Pro 2,x, iMac 5,x / 6,1, Mac mini 2,1, Mac Pro 1,1 / 2,1) |
 
 Which one for your Mac: [docs/MAC-MODELS.md](docs/MAC-MODELS.md). Making the USB stick and
-starting the Mac from it: [docs/INSTALL-USB.md](docs/INSTALL-USB.md). The release marked
-**Latest** is the stable version; the others are betas. Installed systems update
+starting the Mac from it: [docs/INSTALL-USB.md](docs/INSTALL-USB.md). Only official
+versions are published here (the newest is marked **Latest**). Installed systems update
 themselves (Settings > Software Update) from
-[mangos-updates](https://github.com/Teo-Ba83/mangos-updates).
+[mangos-updates](https://github.com/Teo-Ba83/mangos-updates), where testers also find the
+beta builds.
 
 | | |
 |---|---|

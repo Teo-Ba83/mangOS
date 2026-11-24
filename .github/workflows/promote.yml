@@ -1,7 +1,8 @@
-# Promotes one build to the stable channel: its release in the public updates
-# repository becomes the release marked "latest", which installed MangOS
-# systems on the stable channel update from, and its ISO release in this
-# repository becomes the "latest" one, where new installations download it. Nothing is rebuilt: the files are the ones
+# Promotes one build to the stable channel:
+#   - its release in the public updates repository becomes the one marked
+#     "latest", which installed MangOS systems on the stable channel update from;
+#   - its two ISOs are copied to a release of this repository, which holds
+#     only official versions (the newest is "Latest"; the 3 newest are kept). Nothing is rebuilt: the files are the ones
 # the build workflow signed, so their Sigstore signatures stay valid.
 # Triggered by a change of channels/stable-build, or from the Actions tab.
 name: Promote a build to stable
@@ -45,12 +46,49 @@ jobs:
             grep -qx "$f" assets.txt || { echo "::error::$tag has no $f"; exit 1; }
           done
           gh release edit "$tag" -R "$REPO" --prerelease=false --latest --title "MangOS $tag (stable)"
-          # the ISOs of the same build in this repository
-          if GH_TOKEN="$OWN_TOKEN" gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            GH_TOKEN="$OWN_TOKEN" gh release edit "$tag" -R "$GITHUB_REPOSITORY" --prerelease=false --latest --title "MangOS $tag"
-            echo "ISOs: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
-          else
-            echo "::warning::$GITHUB_REPOSITORY has no ISO release for $tag (builds before the ISOs moved here): its ISOs stay in $REPO"
-          fi
           echo "Build $BUILD ($tag) is now the stable version."
+
+          # The official release in this repository: the build's two ISOs.
+          mkdir -p iso
+          gh release download "$tag" -R "$REPO" -D iso -p 'MangOS-*.iso' -p 'MangOS-*.iso.sha256'
+          ls -la iso
+          ls iso/*.iso >/dev/null 2>&1 || { echo "::error::$tag has no ISO in $REPO"; exit 1; }
+          (cd iso && sha256sum -c ./*.sha256)
+          ver=${tag#v}; ver=${ver%%-build.*}
+          {
+            echo "**MangOS $ver**, official version (build $BUILD)."
+            echo
+            echo "Download the image for your Mac, check it against its \`.sha256\` file, write it to a USB"
+            echo "stick (balenaEtcher works on Windows and macOS) and start the Mac holding Option."
+            echo
+            for f in iso/*.iso; do
+              case "$f" in
+                *-efi32.iso) echo "- \`$(basename "$f")\`: 2006-2007 Macs with 32-bit EFI (MacBook2,1, MacBook Pro 2,x, iMac 5,x / 6,1, Mac mini 2,1, Mac Pro 1,1 / 2,1)";;
+                *) echo "- \`$(basename "$f")\`: Macs from late 2007 to 2012 (64-bit EFI), and PCs";;
+              esac
+            done
+            echo
+            echo "Which one for your Mac: https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/MAC-MODELS.md"
+            echo "Making the USB stick: https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/INSTALL-USB.md"
+            echo
+            echo "Once installed, MangOS updates itself (Settings > Software Update)."
+            echo
+            echo '```'; cat iso/*.sha256; echo '```'
+          } > notes.md
+          export GH_TOKEN="$OWN_TOKEN"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$tag" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "MangOS $ver (build $BUILD)" --notes-file notes.md iso/*.iso iso/*.iso.sha256
+          echo "Official ISOs: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
+
+          # Only official versions here: no betas, at most the 3 newest.
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[] | "\(.tagName) \(.isPrerelease)"' |
+          { n=0; while read -r t pre; do
+              if [ "$pre" = true ]; then echo "Deleting beta release $t"; gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes; continue; fi
+              n=$((n + 1))
+              [ "$n" -le 3 ] || { echo "Deleting old official release $t"; gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes; }
+            done; }
           gh release view -R "$REPO" --json tagName,name --jq '"latest: \(.tagName) \(.name)"'
