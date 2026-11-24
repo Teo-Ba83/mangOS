@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Calculator
+Name[it]=Calcolatrice
+Comment=Basic and scientific calculator
+Comment[it]=Calcolatrice base e scientifica
+Exec=mangos-calculator
+Icon=mangos-calculator
+Terminal=false
+Categories=Utility;Calculator;X-MangOS-Launchpad;
+Keywords=calculator;calc;math;scientific;calcolatrice;calcoli;
+StartupNotify=true

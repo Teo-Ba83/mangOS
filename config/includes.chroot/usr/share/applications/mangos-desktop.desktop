@@ -1,0 +1,11 @@
+[Desktop Entry]
+# The desktop itself (xfdesktop): the top bar's app menu shows this name
+# when the desktop is focused, instead of "Xfdesktop" (like the Mac shows
+# its file manager there). Hidden from Launchpad and Spotlight.
+Type=Application
+Name=Desktop
+Name[it]=Scrivania
+Exec=thunar
+Icon=user-desktop
+NoDisplay=true
+StartupWMClass=Xfdesktop

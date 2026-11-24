@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- MangOS Calculator icon (original artwork): a graphite tile with a
+       display line and round keys, the operator column in mango orange. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a4a4e"/>
+      <stop offset="1" stop-color="#1f1f22"/>
+    </linearGradient>
+    <linearGradient id="mango" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFB224"/>
+      <stop offset="1" stop-color="#FF7A1A"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="100" fill="url(#tile)"/>
+  <rect x="96" y="92" width="320" height="64" rx="18" fill="#101012"/>
+  <text x="396" y="140" text-anchor="end" font-family="Inter, DejaVu Sans, sans-serif" font-size="44" font-weight="300" fill="#ffffff">3,14</text>
+  <g fill="#8e8e93">
+    <circle cx="136" cy="222" r="30"/><circle cx="216" cy="222" r="30"/><circle cx="296" cy="222" r="30"/>
+    <circle cx="136" cy="302" r="30"/><circle cx="216" cy="302" r="30"/><circle cx="296" cy="302" r="30"/>
+    <circle cx="136" cy="382" r="30"/><circle cx="216" cy="382" r="30"/><circle cx="296" cy="382" r="30"/>
+  </g>
+  <g fill="url(#mango)">
+    <circle cx="376" cy="222" r="30"/><circle cx="376" cy="302" r="30"/><circle cx="376" cy="382" r="30"/>
+  </g>
+  <g stroke="#ffffff" stroke-width="7" stroke-linecap="round">
+    <line x1="362" y1="222" x2="390" y2="222"/>
+    <line x1="362" y1="302" x2="390" y2="302"/><line x1="376" y1="288" x2="376" y2="316"/>
+    <line x1="362" y1="376" x2="390" y2="376"/><line x1="362" y1="388" x2="390" y2="388"/>
+  </g>
+</svg>
