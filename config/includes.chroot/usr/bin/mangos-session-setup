@@ -75,6 +75,17 @@ if [ ! -e "$cfg/clock-notifications" ]; then
   touch "$cfg/clock-notifications"
 fi
 
+# LocalSend (AirDrop) is a Flutter app: on the old Macs' graphics it closed
+# right after opening. Its Launchpad / menu entry goes through run-gl-safe,
+# which falls back to processor drawing (user-level copy of its entry).
+for f in /usr/share/applications/*ocalsend*.desktop; do
+  [ -f "$f" ] || continue
+  u=$HOME/.local/share/applications/$(basename "$f"); mkdir -p "${u%/*}"
+  if [ ! -e "$u" ] || grep -q 'X-MangOS-GL-Safe' "$u"; then
+    sed -e 's|^Exec=\(.*\)$|Exec=/usr/lib/mangos/run-gl-safe \1|' -e '/^\[Desktop Entry\]/a X-MangOS-GL-Safe=true' "$f" > "$u"
+  fi
+done
+
 # The dock's Settings item now opens MangOS System Settings (gear icon).
 di=$HOME/.config/plank/dock1/launchers/xfce-settings-manager.dockitem
 if [ -f "$di" ] && grep -q 'xfce-settings-manager.desktop' "$di"; then

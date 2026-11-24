@@ -53,6 +53,8 @@ def main():
         print(__doc__); sys.exit(2)
     exe = find_exe(app)
     if exe:
+        if kind == "airdrop":     # Flutter app: falls back to processor drawing on old graphics
+            os.execv("/usr/lib/mangos/run-gl-safe", ["run-gl-safe", exe])
         os.execv(exe, [exe])
     load_css()
     d = Gtk.MessageDialog(message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE,

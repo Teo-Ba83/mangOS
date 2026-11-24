@@ -380,8 +380,7 @@ class Panel(Gtk.Window):
             self.after(["bluetoothctl", "power", "off" if st else "on"])
 
     def on_airdrop(self):
-        exe = shutil.which("localsend_app") or shutil.which("localsend")
-        self.launch([exe] if exe else ["mangos-continuity", "airdrop"])
+        self.launch(["mangos-continuity", "airdrop"])     # starts LocalSend safely on old graphics
 
     def on_dnd(self):
         self.after(["xfconf-query", "-c", "xfce4-notifyd", "-p", "/do-not-disturb", "-n", "-t", "bool",

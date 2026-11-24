@@ -6,6 +6,10 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-24 00:21
+en: AirDrop (LocalSend) no longer closes right after opening on Macs with older graphics.
+it: AirDrop (LocalSend) non si chiude più appena aperto sui Mac con grafica meno recente.
+
 ## 2026-11-24 00:19
 en: New Calculator (Launchpad): basic and scientific (Ctrl+2), history (Ctrl+H), works from the keyboard.
 it: Nuova Calcolatrice (Launchpad): base e scientifica (Ctrl+2), cronologia (Ctrl+H), si usa anche da tastiera.

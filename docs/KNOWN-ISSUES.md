@@ -234,6 +234,16 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   (newest first; remove one or Clear All), plus Do Not Disturb. The history
   is xfce4-notifyd's log (last 200 notifications), now on by default.
 
+## AirDrop (LocalSend)
+
+- On the MacBook (GMA X3100) LocalSend opened and closed at once. Most
+  likely cause: LocalSend is a Flutter app and wants OpenGL 3; the GMA X3100
+  has 2.1. AirDrop (Control Center, Settings, Launchpad) now starts it
+  through /usr/lib/mangos/run-gl-safe: on graphics below OpenGL 3, or when it
+  closes by itself within 10 seconds, it is started again drawn by the
+  processor (LIBGL_ALWAYS_SOFTWARE=1), and that is remembered. Its output is
+  in ~/.cache/mangos/localsend_app.log. Not yet confirmed on the Mac.
+
 ## Mango Speed Test
 
 - Measures against Cloudflare's speed test servers (speed.cloudflare.com):

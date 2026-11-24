@@ -1,0 +1,59 @@
+#!/usr/bin/python3
+"""Start an app that needs newer graphics than the Mac has (Flutter apps
+such as LocalSend want OpenGL 3; the GMA X3100 has 2.1): when it closes by
+itself right after starting, start it again drawn by the processor
+(Mesa llvmpipe, LIBGL_ALWAYS_SOFTWARE=1) and remember that for this app.
+On Macs whose graphics cannot do OpenGL 3 it is drawn by the processor
+from the start.
+
+usage: run-gl-safe <program> [arguments...]
+Its output goes to ~/.cache/mangos/<program>.log; if it cannot start even
+drawn by the processor, a message shows the end of that log."""
+import os, shutil, subprocess, sys, time
+
+if len(sys.argv) < 2:
+    print(__doc__); sys.exit(2)
+exe = shutil.which(sys.argv[1]) or sys.argv[1]
+name = os.path.basename(exe)
+cache = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "mangos")
+os.makedirs(cache, exist_ok=True)
+flag = os.path.join(cache, f"software-gl-{name}")
+log_path = os.path.join(cache, f"{name}.log")
+
+
+def old_gl():
+    try:
+        sys.path.insert(0, "/usr/lib/python3/dist-packages")
+        from mangos import appweight
+        gl = appweight.machine().get("gl")
+        return bool(gl) and tuple(gl) < (3, 0)
+    except Exception:
+        return False
+
+
+def start(software):
+    env = dict(os.environ)
+    if software:
+        env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    with open(log_path, "a") as log:
+        log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} {name} (software GL: {software})\n"); log.flush()
+        t = time.monotonic()
+        rc = subprocess.call([exe] + sys.argv[2:], env=env, stdout=log, stderr=subprocess.STDOUT)
+    return rc, time.monotonic() - t
+
+
+software = os.path.exists(flag) or old_gl()
+rc, secs = start(software)
+if rc != 0 and secs < 10 and not software:
+    rc, secs = start(True)          # closed by itself at once: try drawn by the processor
+    if rc == 0 or secs >= 10:
+        open(flag, "w").close()
+if rc != 0 and secs < 10:
+    try:
+        tail = "".join(open(log_path, errors="replace").readlines()[-8:])
+    except OSError:
+        tail = ""
+    it = os.environ.get("LANG", "").startswith("it")
+    msg = (f"{name} non riesce ad avviarsi su questo Mac.\n\n" if it else f"{name} cannot start on this Mac.\n\n") + tail
+    subprocess.call(["zenity", "--error", "--no-wrap", "--title", name, "--text", msg[:1500]])
+sys.exit(rc)
