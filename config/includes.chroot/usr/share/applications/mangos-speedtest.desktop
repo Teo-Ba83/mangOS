@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Mango Speed Test
+Name[it]=Mango Speed Test
+Comment=How fast your connection is, and why
+Comment[it]=Quanto è veloce la tua connessione, e perché
+Exec=mangos-speedtest
+Icon=gnome-nettool
+Terminal=false
+Categories=Network;Utility;X-MangOS-Launchpad;
+Keywords=speed;speedtest;internet;wifi;download;upload;ping;velocità;connessione;
+StartupNotify=true

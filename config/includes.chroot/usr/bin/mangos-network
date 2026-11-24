@@ -240,6 +240,11 @@ class Network(Gtk.Window):
                                 "Tutte le connessioni e impostazioni (editor di NetworkManager)"))
         adv.connect("clicked", lambda *_: subprocess.Popen(["nm-connection-editor"]))
         bottom.pack_start(other, False, False, 0)
+        speed = Gtk.Button(label=tr("Speed Test…", "Test velocità…"))
+        speed.set_tooltip_text(tr("How fast this connection is (Mango Speed Test)",
+                                  "Quanto è veloce questa connessione (Mango Speed Test)"))
+        speed.connect("clicked", lambda *_: subprocess.Popen(["mangos-speedtest", "--start"]))
+        bottom.pack_start(speed, False, False, 0)
         bottom.pack_end(adv, False, False, 0)
         if embedded:
             rb = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)

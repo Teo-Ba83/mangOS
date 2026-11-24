@@ -1,0 +1,348 @@
+#!/usr/bin/python3
+"""Mango Speed Test: how fast this Mac's connection is, and why.
+
+Download, upload and response time (latency) measured against Cloudflare's
+speed test servers (speed.cloudflare.com: no account, no ads), next to what
+a website cannot see: Wi-Fi network, band (2.4 / 5 GHz), signal, link rate
+and the driver in use (wl, b43, ath9k...). A test lasts about 20 seconds and
+uses some tens of MB (more on fast connections).
+MANGOS_SPEEDTEST_URL overrides the server (used by the tests)."""
+import math, os, statistics, subprocess, sys, threading, time, urllib.request
+import cairo
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango
+from mangos import tr, load_css
+
+BASE = os.environ.get("MANGOS_SPEEDTEST_URL", "https://speed.cloudflare.com").rstrip("/")
+DOWN_SECS, UP_SECS, STREAMS = 10, 8, 4
+CHUNK = 25_000_000
+UA = {"User-Agent": "MangOS-SpeedTest/1.0"}
+ENV = dict(os.environ, LC_ALL="C", LANG="C")
+
+CSS = b"""
+.st-card { border-radius: 12px; background: alpha(currentColor, .06); padding: 10px 14px; }
+.st-key { font-size: 11px; font-weight: 800; opacity: .55; }
+.st-val { font-size: 22px; font-weight: 800; }
+.st-unit { font-size: 12px; opacity: .6; }
+.st-dim { font-size: 12px; opacity: .62; }
+.st-detail-key { opacity: .6; }
+.st-verdict { font-size: 14px; font-weight: 700; }
+"""
+
+
+# ------------------------------------------------------------ connection ----
+def run(*args):
+    try:
+        return subprocess.run(list(args), capture_output=True, text=True, env=ENV, timeout=6).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def connection():
+    """{'kind': 'wifi'|'ethernet'|None, 'name', 'band', 'signal', 'rate', 'driver', 'device'}"""
+    info = {"kind": None}
+    for line in run("nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device").splitlines():
+        p = line.replace("\\:", "\0").split(":")
+        if len(p) >= 4 and p[2] == "connected" and p[1] in ("wifi", "ethernet"):
+            info = {"kind": p[1], "device": p[0], "name": p[3].replace("\0", ":")}
+            if p[1] == "wifi":
+                break
+    dev = info.get("device")
+    if dev:
+        drv = os.path.realpath(f"/sys/class/net/{dev}/device/driver")
+        info["driver"] = os.path.basename(drv) if os.path.exists(drv) else ""
+    if info.get("kind") == "wifi":
+        for line in run("nmcli", "-t", "-f", "ACTIVE,SSID,FREQ,SIGNAL,RATE", "device", "wifi", "list",
+                        "ifname", dev, "--rescan", "no").splitlines():
+            p = line.replace("\\:", "\0").split(":")
+            if len(p) >= 5 and p[0] == "yes":
+                info["name"] = p[1].replace("\0", ":") or info.get("name", "")
+                mhz = int("".join(c for c in p[2] if c.isdigit()) or 0)
+                info["band"] = "5 GHz" if mhz >= 4900 else "2.4 GHz" if mhz else ""
+                info["signal"] = p[3]
+                info["rate"] = p[4]
+    return info
+
+
+DRIVER_NAMES = {"wl": "Broadcom wl (fast)", "b43-pci-bridge": "Broadcom b43 (open)", "bcma-pci-bridge": "Broadcom b43 (open)",
+                "ath9k": "Atheros ath9k", "ath5k": "Atheros ath5k", "brcmsmac": "Broadcom brcmsmac", "tg3": "Broadcom Ethernet",
+                "sky2": "Marvell Ethernet", "forcedeth": "NVIDIA Ethernet", "e1000e": "Intel Ethernet"}
+
+
+# ------------------------------------------------------------ measuring ----
+class Test:
+    def __init__(self, on_progress, on_done):
+        self.on_progress, self.on_done = on_progress, on_done
+        self.stop = False
+
+    def latency(self):
+        times = []
+        for _ in range(8):
+            if self.stop:
+                break
+            t = time.monotonic()
+            try:
+                with urllib.request.urlopen(urllib.request.Request(f"{BASE}/__down?bytes=0", headers=UA), timeout=8) as r:
+                    r.read()
+            except OSError:
+                continue
+            times.append((time.monotonic() - t) * 1000)
+        if not times:
+            raise OSError("server not reachable")
+        return statistics.median(times[1:] if len(times) > 2 else times), \
+            (statistics.pstdev(times[1:]) if len(times) > 3 else 0)
+
+    def transfer(self, kind, secs):
+        """Mbit/s with STREAMS parallel connections for `secs` seconds."""
+        total = [0]
+        lock = threading.Lock()
+        start = time.monotonic()
+        end = start + secs
+        payload = os.urandom(1_000_000) if kind == "up" else None
+
+        def worker():
+            while time.monotonic() < end and not self.stop:
+                try:
+                    if kind == "down":
+                        req = urllib.request.Request(f"{BASE}/__down?bytes={CHUNK}", headers=UA)
+                        with urllib.request.urlopen(req, timeout=15) as r:
+                            while time.monotonic() < end and not self.stop:
+                                b = r.read(65536)
+                                if not b:
+                                    break
+                                with lock:
+                                    total[0] += len(b)
+                    else:
+                        req = urllib.request.Request(f"{BASE}/__up", data=payload, method="POST",
+                                                     headers=dict(UA, **{"Content-Type": "application/octet-stream"}))
+                        with urllib.request.urlopen(req, timeout=15) as r:
+                            r.read()
+                        with lock:
+                            total[0] += len(payload)
+                except OSError:
+                    time.sleep(0.3)
+        threads = [threading.Thread(target=worker, daemon=True) for _ in range(STREAMS)]
+        for t in threads:
+            t.start()
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.2)
+            el = time.monotonic() - start
+            if el > 0.5:
+                self.on_progress(kind, total[0] * 8 / el / 1e6, min(1.0, el / secs))
+            if time.monotonic() > end + 3:
+                break
+        el = max(0.1, min(time.monotonic(), end) - start)
+        return total[0] * 8 / el / 1e6, total[0]
+
+    def run(self):
+        res = {}
+        try:
+            self.on_progress("ping", 0, 0)
+            res["ping"], res["jitter"] = self.latency()
+            res["down"], b1 = self.transfer("down", DOWN_SECS)
+            res["up"], b2 = self.transfer("up", UP_SECS)
+            res["mb"] = (b1 + b2) / 1e6
+        except OSError as e:
+            res["error"] = str(e)
+        self.on_done(res)
+
+
+# ------------------------------------------------------------ the window ----
+class Gauge(Gtk.DrawingArea):
+    """A ring that fills up to the current speed (log scale up to 1 Gbit/s)."""
+    def __init__(self):
+        super().__init__()
+        self.set_size_request(240, 240)
+        self.value, self.phase, self.frac = None, "", 0
+        self.connect("draw", self.draw)
+
+    def set(self, value, phase, frac=0):
+        self.value, self.phase, self.frac = value, phase, frac
+        self.queue_draw()
+
+    def draw(self, w, cr):
+        W, H = w.get_allocated_width(), w.get_allocated_height()
+        cx, cy, r = W / 2, H / 2, min(W, H) / 2 - 14
+        fg = w.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        a0, a1 = math.radians(135), math.radians(405)
+        cr.set_line_width(16); cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, .12)
+        cr.arc(cx, cy, r, a0, a1); cr.stroke()
+        if self.value:
+            f = min(1.0, math.log10(1 + self.value) / 3.0)          # 1, 10, 100, 1000 Mbit/s
+            grad = cairo.LinearGradient(cx - r, cy, cx + r, cy)
+            grad.add_color_stop_rgb(0, 1.0, 0.62, 0.04); grad.add_color_stop_rgb(1, 1.0, 0.27, 0.23)
+            cr.set_source(grad)
+            cr.arc(cx, cy, r, a0, a0 + (a1 - a0) * max(0.01, f)); cr.stroke()
+        if self.frac:                                               # thin progress of the phase
+            cr.set_line_width(3); cr.set_source_rgba(0.04, 0.52, 1.0, .9)
+            cr.arc(cx, cy, r - 16, a0, a0 + (a1 - a0) * self.frac); cr.stroke()
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 1)
+        layout = PangoCairo.create_layout(cr)
+        txt = "—" if self.value is None else (f"{self.value:.0f}" if self.value >= 10 else f"{self.value:.1f}")
+        layout.set_markup(f"<span font_family='Inter' font_weight='800' size='{int(38 * Pango.SCALE)}'>{txt}</span>", -1)
+        tw, th = layout.get_pixel_size()
+        cr.move_to(cx - tw / 2, cy - th / 2 - 6); PangoCairo.show_layout(cr, layout)
+        layout.set_markup(f"<span font_family='Inter' size='{int(11 * Pango.SCALE)}' alpha='60%'>Mbit/s</span>", -1)
+        tw2, _ = layout.get_pixel_size()
+        cr.move_to(cx - tw2 / 2, cy + th / 2 - 8); PangoCairo.show_layout(cr, layout)
+        layout.set_markup(f"<span font_family='Inter' size='{int(11 * Pango.SCALE)}' font_weight='700'>{GLib.markup_escape_text(self.phase)}</span>", -1)
+        tw3, _ = layout.get_pixel_size()
+        cr.move_to(cx - tw3 / 2, cy + r - 26); PangoCairo.show_layout(cr, layout)
+
+
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import PangoCairo  # noqa: E402
+
+
+class SpeedTest(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Mango Speed Test")
+        self.set_default_size(520, -1); self.set_resizable(False)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("gnome-nettool")
+        self.set_titlebar(Gtk.HeaderBar(show_close_button=True, title="Mango Speed Test"))
+        self.test = None
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        self.add(box)
+
+        self.gauge = Gauge()
+        box.pack_start(self.gauge, False, False, 0)
+        self.verdict = Gtk.Label(label=tr("Press Start to measure your connection.",
+                                          "Premi Avvia per misurare la tua connessione."), wrap=True,
+                                 justify=Gtk.Justification.CENTER, max_width_chars=50)
+        self.verdict.get_style_context().add_class("st-verdict")
+        box.pack_start(self.verdict, False, False, 0)
+
+        cards = Gtk.Box(spacing=10, homogeneous=True)
+        self.vals = {}
+        for key, title, unit in (("down", "DOWNLOAD", "Mbit/s"), ("up", "UPLOAD", "Mbit/s"),
+                                 ("ping", tr("RESPONSE", "RISPOSTA"), "ms")):
+            c = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2); c.get_style_context().add_class("st-card")
+            k = Gtk.Label(label=title, xalign=0); k.get_style_context().add_class("st-key")
+            row = Gtk.Box(spacing=4)
+            v = Gtk.Label(label="—", xalign=0); v.get_style_context().add_class("st-val")
+            u = Gtk.Label(label=unit, xalign=0, valign=Gtk.Align.END, margin_bottom=4); u.get_style_context().add_class("st-unit")
+            row.pack_start(v, False, False, 0); row.pack_start(u, False, False, 0)
+            c.pack_start(k, False, False, 0); c.pack_start(row, False, False, 0)
+            cards.pack_start(c, True, True, 0)
+            self.vals[key] = v
+        box.pack_start(cards, False, False, 0)
+
+        self.details = Gtk.Grid(column_spacing=12, row_spacing=4, margin_top=4)
+        box.pack_start(self.details, False, False, 0)
+        self.fill_details()
+
+        row = Gtk.Box(spacing=10)
+        note = Gtk.Label(xalign=0, wrap=True, max_width_chars=44, label=tr(
+            "Measured with Cloudflare's speed test servers; a test uses some tens of MB.",
+            "Misurato con i server di test di Cloudflare; un test usa qualche decina di MB."))
+        note.get_style_context().add_class("st-dim")
+        row.pack_start(note, True, True, 0)
+        self.btn = Gtk.Button(label=tr("Start", "Avvia"))
+        self.btn.get_style_context().add_class("suggested-action")
+        self.btn.connect("clicked", lambda *_: self.start())
+        row.pack_end(self.btn, False, False, 0)
+        box.pack_start(row, False, False, 0)
+        self.connect("destroy", self.on_destroy)
+
+    def fill_details(self):
+        for c in self.details.get_children():
+            c.destroy()
+        info = connection()
+        rows = []
+        if info.get("kind") == "wifi":
+            rows.append((tr("Wi-Fi network", "Rete Wi-Fi"), info.get("name", "")))
+            band = info.get("band", "")
+            if band:
+                rows.append((tr("Band", "Banda"), band))
+            if info.get("signal"):
+                s = int(info["signal"] or 0)
+                q = tr("excellent", "ottimo") if s >= 70 else tr("good", "buono") if s >= 50 else \
+                    tr("fair", "discreto") if s >= 30 else tr("weak", "debole")
+                rows.append((tr("Signal", "Segnale"), f"{s}%  ({q})"))
+            if info.get("rate"):
+                rows.append((tr("Link rate", "Velocità del collegamento"), info["rate"]))
+        elif info.get("kind") == "ethernet":
+            rows.append((tr("Connection", "Connessione"), tr("Ethernet cable", "Cavo Ethernet")))
+        else:
+            rows.append((tr("Connection", "Connessione"), tr("not connected", "non connesso")))
+        if info.get("driver"):
+            rows.append((tr("Driver", "Driver"), DRIVER_NAMES.get(info["driver"], info["driver"])))
+        for i, (k, v) in enumerate(rows):
+            a = Gtk.Label(label=k, xalign=1); a.get_style_context().add_class("st-detail-key")
+            b = Gtk.Label(label=v, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            self.details.attach(a, 0, i, 1, 1); self.details.attach(b, 1, i, 1, 1)
+        self.details.show_all()
+        self.info = info
+
+    def start(self):
+        if self.test:
+            return
+        self.btn.set_sensitive(False)
+        for v in self.vals.values():
+            v.set_text("—")
+        self.verdict.set_text(tr("Measuring…", "Misurazione in corso…"))
+        self.fill_details()
+        self.test = Test(lambda *a: GLib.idle_add(self.progress, *a), lambda r: GLib.idle_add(self.done, r))
+        threading.Thread(target=self.test.run, daemon=True).start()
+
+    def progress(self, kind, mbps, frac):
+        phase = {"ping": tr("Response time…", "Tempo di risposta…"), "down": "Download", "up": "Upload"}[kind]
+        self.gauge.set(mbps if kind != "ping" else None, phase, frac)
+        if kind in self.vals and kind != "ping":
+            self.vals[kind].set_text(f"{mbps:.1f}" if mbps < 10 else f"{mbps:.0f}")
+        return False
+
+    def done(self, r):
+        self.test = None
+        self.btn.set_sensitive(True); self.btn.set_label(tr("Test Again", "Ripeti"))
+        if "error" in r:
+            self.gauge.set(None, "")
+            self.verdict.set_text(tr("Cannot reach the speed test server: check the connection.",
+                                     "Non riesco a raggiungere il server del test: controlla la connessione."))
+            return False
+        self.vals["down"].set_text(f"{r['down']:.1f}" if r["down"] < 10 else f"{r['down']:.0f}")
+        self.vals["up"].set_text(f"{r['up']:.1f}" if r["up"] < 10 else f"{r['up']:.0f}")
+        self.vals["ping"].set_text(f"{r['ping']:.0f}")
+        self.gauge.set(r["down"], tr("Download", "Download"))
+        self.verdict.set_text(self.explain(r))
+        return False
+
+    def explain(self, r):
+        d = r["down"]
+        what = (tr("Fast: video calls, 4K streaming and big downloads are fine.",
+                   "Veloce: videochiamate, video in 4K e download grandi vanno bene.") if d >= 50 else
+                tr("Good: HD video and video calls are fine.", "Buona: video in HD e videochiamate vanno bene.") if d >= 15 else
+                tr("Enough for browsing and normal-quality video.", "Sufficiente per navigare e video di qualità normale.") if d >= 5 else
+                tr("Slow: pages and videos will take a while.", "Lenta: pagine e video ci metteranno un po'."))
+        hint = ""
+        info = self.info
+        if info.get("driver") in ("b43-pci-bridge", "bcma-pci-bridge") and d < 25:
+            hint = tr(" The Wi-Fi card uses the open b43 driver: the wl driver is usually much faster.",
+                      " La scheda Wi-Fi usa il driver b43: il driver wl di solito è molto più veloce.")
+        elif info.get("kind") == "wifi" and info.get("signal") and int(info["signal"]) < 40:
+            hint = tr(" The Wi-Fi signal is weak: move closer to the router.",
+                      " Il segnale Wi-Fi è debole: avvicinati al router.")
+        return what + hint
+
+    def on_destroy(self, *_):
+        if self.test:
+            self.test.stop = True
+        Gtk.main_quit()
+
+
+def main():
+    load_css()
+    p = Gtk.CssProvider(); p.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    w = SpeedTest(); w.show_all()
+    if "--start" in sys.argv:
+        w.start()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

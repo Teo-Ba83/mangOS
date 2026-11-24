@@ -234,6 +234,13 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   (newest first; remove one or Clear All), plus Do Not Disturb. The history
   is xfce4-notifyd's log (last 200 notifications), now on by default.
 
+## Mango Speed Test
+
+- Measures against Cloudflare's speed test servers (speed.cloudflare.com):
+  no account, no ads, but the test does contact Cloudflare and uses some
+  tens of MB (more on fast lines). On a 2008 Core 2 Duo the processor can
+  cap very fast results; it is meant to compare networks and drivers.
+
 ## Backups
 
 - **Backup** (Settings, Launchpad) uses Timeshift: snapshots of the system

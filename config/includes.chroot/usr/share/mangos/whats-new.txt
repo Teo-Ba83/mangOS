@@ -6,6 +6,10 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-24 00:13
+en: New Mango Speed Test (Launchpad, or Settings > Wi-Fi & Network > Speed Test): download, upload and response time, with the Wi-Fi band, signal and driver in use.
+it: Nuovo Mango Speed Test (Launchpad, oppure Impostazioni > Wi-Fi e rete > Test velocità): download, upload e tempo di risposta, con banda, segnale e driver Wi-Fi in uso.
+
 ## 2026-11-23 23:54
 en: Two downloads: MangOS for Macs from late 2007 to 2012, and MangOS EFI32 for the 2006-2007 Macs with 32-bit firmware. The installed system and its updates are the same.
 it: Due immagini da scaricare: MangOS per i Mac da fine 2007 al 2012, e MangOS EFI32 per i Mac 2006-2007 con firmware a 32 bit. Il sistema installato e gli aggiornamenti sono gli stessi.
