@@ -76,11 +76,26 @@ jobs:
             echo '```'; cat iso/*.sha256; echo '```'
           } > notes.md
           export GH_TOKEN="$OWN_TOKEN"
+          # a previous attempt (also an unfinished draft) is replaced
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft,name \
+            --jq ".[] | select(.tagName == \"$tag\" or (.isDraft and .name == \"MangOS $ver (build $BUILD)\")) | .tagName" |
+          while read -r t; do gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes || true; done
           if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete "$tag" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
           fi
-          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
-            --title "MangOS $ver (build $BUILD)" --notes-file notes.md iso/*.iso iso/*.iso.sha256
+          # created as a draft, published only once both ISOs are uploaded;
+          # each 2 GB upload is retried (GitHub sometimes answers 408 timeouts)
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft \
+            --title "MangOS $ver (build $BUILD)" --notes-file notes.md
+          for f in iso/*.iso.sha256 iso/*.iso; do
+            ok=no
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber "$f"; then ok=yes; break; fi
+              echo "upload of $(basename "$f") failed (attempt $attempt), retrying"; sleep $((attempt * 20))
+            done
+            [ "$ok" = yes ] || { echo "::error::could not upload $f"; exit 1; }
+          done
+          gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false --latest
           echo "Official ISOs: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
 
           # Only official versions here: no betas, at most the 3 newest.
