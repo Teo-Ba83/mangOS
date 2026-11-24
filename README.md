@@ -8,6 +8,21 @@ to macOS, built to give a 2007 polycarbonate MacBook (A1181, Core 2 Duo,
 (one image for all: [which Macs](docs/MAC-MODELS.md)). Light enough for old Intel graphics, with the
 ArtCraft creative apps preinstalled.
 
+## Download
+
+**[Download MangOS](https://github.com/Teo-Ba83/mangOS/releases)**: two images, same system inside.
+
+| Image | For |
+|---|---|
+| `MangOS-<version>-amd64.iso` | Macs from late 2007 to 2012 (64-bit EFI), and PCs |
+| `MangOS-<version>-efi32.iso` | 2006-2007 Macs with 32-bit EFI (MacBook2,1, MacBook Pro 2,x, iMac 5,x / 6,1, Mac mini 2,1, Mac Pro 1,1 / 2,1) |
+
+Which one for your Mac: [docs/MAC-MODELS.md](docs/MAC-MODELS.md). Making the USB stick and
+starting the Mac from it: [docs/INSTALL-USB.md](docs/INSTALL-USB.md). The release marked
+**Latest** is the stable version; the others are betas. Installed systems update
+themselves (Settings > Software Update) from
+[mangos-updates](https://github.com/Teo-Ba83/mangos-updates).
+
 | | |
 |---|---|
 | Base | Debian 13 stable, amd64, live-build |

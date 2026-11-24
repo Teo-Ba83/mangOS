@@ -1,8 +1,11 @@
-# Builds the MangOS ISO and the mangos-system update package on GitHub's
+# Builds the MangOS ISOs and the mangos-system update package on GitHub's
 # servers, signs the update with Sigstore (keyless, tied to this workflow),
-# tests the updater against it, and publishes ISO + update as the only
-# release of the public updates repository (MANGOS_UPDATES_REPO in
-# scripts/versions.env). Installed MangOS systems update themselves from it.
+# tests the updater against it, and publishes:
+#   - the two ISOs (amd64, efi32) as a release of this repository: where
+#     people download MangOS to make a USB stick;
+#   - the update package as a release of the public updates repository
+#     (MANGOS_UPDATES_REPO in scripts/versions.env), which installed MangOS
+#     systems update themselves from.
 #
 # Publishing to the public repository needs the secret MANGOS_UPDATES_TOKEN
 # (fine-grained token, "Contents: read and write" on that repository only).
@@ -106,7 +109,8 @@ jobs:
             echo
             echo "- \`MangOS-${MANGOS_VERSION}-amd64.iso\`: Macs from late 2007 to 2012 (64-bit EFI)"
             echo "- \`MangOS-${MANGOS_VERSION}-efi32.iso\`: 2006-2007 Macs with 32-bit EFI (MacBook2,1, MacBook Pro 2,x,"
-            echo "  iMac 5,x / 6,1, Mac mini 2,1, Mac Pro 1,1 / 2,1). Which one: see docs/MAC-MODELS.md."
+            echo "  iMac 5,x / 6,1, Mac mini 2,1, Mac Pro 1,1 / 2,1)."
+            echo "  Which one for your Mac: https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/MAC-MODELS.md"
             echo "  The installed system and its updates are the same for both."
             echo
             echo "**Beta build.** Macs on the beta channel get it automatically; it reaches everyone (stable"
@@ -122,9 +126,16 @@ jobs:
             grep -E '^ArtCraft installed: ' build.log || echo "(none: ArtCraft is NOT in this ISO)"
             echo '```'
             echo
-            echo "Test build: tested in virtual machines only, not yet on a real MacBook."
+            echo "Tested on a MacBook (early 2008, MacBook4,1) and in virtual machines; other models: see the table above."
           } > release-notes.md
           cat release-notes.md
+          {
+            echo "MangOS system update \`$(cat out/mangos-system.version)\` (build #${{ github.run_number }}), signed with Sigstore"
+            echo "by the MangOS build workflow. Installed MangOS systems download it by themselves"
+            echo "(Settings > Software Update)."
+            echo
+            echo "**To install MangOS**, download the ISO from https://github.com/${{ github.repository }}/releases"
+          } > updates-notes.md
 
       # Every build is a beta (pre-release). Builds reach the stable channel
       # (the release marked "latest") only when promoted with the
@@ -137,15 +148,29 @@ jobs:
           token: ${{ secrets.MANGOS_UPDATES_TOKEN }}
           tag_name: ${{ steps.meta.outputs.tag }}
           name: MangOS ${{ steps.meta.outputs.tag }} (beta)
+          body_path: updates-notes.md
+          prerelease: true
+          make_latest: false
+          files: |
+            out/mangos-system.deb
+            out/mangos-system.deb.sigstore.json
+            out/mangos-system.version
+
+      # The ISOs: a release of this (public) repository, a beta (pre-release)
+      # until the build is promoted to stable.
+      - name: Publish the ISOs (this repository)
+        if: env.HAS_UPDATES_TOKEN == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: MangOS ${{ steps.meta.outputs.tag }} (beta)
+          target_commitish: ${{ github.sha }}
           body_path: release-notes.md
           prerelease: true
           make_latest: false
           files: |
             out/*.iso
             out/*.iso.sha256
-            out/mangos-system.deb
-            out/mangos-system.deb.sigstore.json
-            out/mangos-system.version
 
       - name: Publish to this repository (no updates token configured)
         if: env.HAS_UPDATES_TOKEN != 'true'
@@ -197,9 +222,15 @@ jobs:
               echo "Deleting old release $UPDATES_REPO $t"
               GH_TOKEN="$UPDATES_TOKEN" gh release delete "$t" -R "$UPDATES_REPO" --cleanup-tag --yes
             done
-            # builds now live in the public repository
-            GH_TOKEN="$OWN_TOKEN" gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' |
-            while read -r t; do GH_TOKEN="$OWN_TOKEN" gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes; done
+            # ISOs in this repository: keep the stable build and the 3 newest
+            own_stable=$(GH_TOKEN="$OWN_TOKEN" gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
+            GH_TOKEN="$OWN_TOKEN" gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[].tagName' |
+            tail -n +4 | while read -r t; do
+              [ "$t" = "$own_stable" ] && continue
+              echo "Deleting old ISO release $t"
+              GH_TOKEN="$OWN_TOKEN" gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
           else
             GH_TOKEN="$OWN_TOKEN" gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' |
             while read -r t; do

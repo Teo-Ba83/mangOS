@@ -1,7 +1,7 @@
 # Promotes one build to the stable channel: its release in the public updates
 # repository becomes the release marked "latest", which installed MangOS
-# systems on the stable channel update from (and where the ISO for new
-# installations is downloaded). Nothing is rebuilt: the files are the ones
+# systems on the stable channel update from, and its ISO release in this
+# repository becomes the "latest" one, where new installations download it. Nothing is rebuilt: the files are the ones
 # the build workflow signed, so their Sigstore signatures stay valid.
 # Triggered by a change of channels/stable-build, or from the Actions tab.
 name: Promote a build to stable
@@ -20,7 +20,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write   # mark this repository's ISO release as the latest
 
 jobs:
   promote:
@@ -30,6 +30,7 @@ jobs:
       - name: Promote
         env:
           GH_TOKEN: ${{ secrets.MANGOS_UPDATES_TOKEN }}
+          OWN_TOKEN: ${{ github.token }}
           BUILD: ${{ inputs.build }}
         run: |
           set -eu
@@ -44,5 +45,12 @@ jobs:
             grep -qx "$f" assets.txt || { echo "::error::$tag has no $f"; exit 1; }
           done
           gh release edit "$tag" -R "$REPO" --prerelease=false --latest --title "MangOS $tag (stable)"
+          # the ISOs of the same build in this repository
+          if GH_TOKEN="$OWN_TOKEN" gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            GH_TOKEN="$OWN_TOKEN" gh release edit "$tag" -R "$GITHUB_REPOSITORY" --prerelease=false --latest --title "MangOS $tag"
+            echo "ISOs: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
+          else
+            echo "::warning::$GITHUB_REPOSITORY has no ISO release for $tag (builds before the ISOs moved here): its ISOs stay in $REPO"
+          fi
           echo "Build $BUILD ($tag) is now the stable version."
           gh release view -R "$REPO" --json tagName,name --jq '"latest: \(.tagName) \(.name)"'
