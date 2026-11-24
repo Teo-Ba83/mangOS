@@ -9,23 +9,23 @@
 ## 1. Check the download
 
 ```sh
-sha256sum -c MangOS-0.2.0-amd64.iso.sha256    # or MangOS-0.2.0-efi32.iso.sha256
+sha256sum -c MangOS-0.3.0-amd64.iso.sha256    # or MangOS-0.3.0-efi32.iso.sha256
 ```
-It must print `MangOS-0.2.0-amd64.iso: OK`.
+It must print `MangOS-0.3.0-amd64.iso: OK`.
 
 ## 2. Write the ISO to a USB stick (4 GB or bigger, it will be erased)
 
 **Linux**
 ```sh
 lsblk                                   # find the stick, e.g. /dev/sdb (not a partition like sdb1)
-sudo dd if=MangOS-0.2.0-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
+sudo dd if=MangOS-0.3.0-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
 **macOS**
 ```sh
 diskutil list                           # find the stick, e.g. /dev/disk4
 diskutil unmountDisk /dev/disk4
-sudo dd if=MangOS-0.2.0-amd64.iso of=/dev/rdisk4 bs=4m
+sudo dd if=MangOS-0.3.0-amd64.iso of=/dev/rdisk4 bs=4m
 ```
 
 **Windows / any system:** use [balenaEtcher](https://etcher.balena.io) or
