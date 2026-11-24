@@ -194,11 +194,14 @@ jobs:
         run: |
           if [ "$HAS_UPDATES_TOKEN" = true ]; then
             # keep: the beta channel, the stable build ("latest"), the 6 newest builds
+            # (by publication date: all releases there point at the same commit,
+            # so their createdAt is identical and cannot be used to sort)
             stable=$(GH_TOKEN="$UPDATES_TOKEN" gh release view -R "$UPDATES_REPO" --json tagName --jq .tagName 2>/dev/null || true)
-            GH_TOKEN="$UPDATES_TOKEN" gh release list -R "$UPDATES_REPO" --limit 200 --json tagName,createdAt \
-              --jq 'sort_by(.createdAt) | reverse | .[].tagName' |
+            GH_TOKEN="$UPDATES_TOKEN" gh release list -R "$UPDATES_REPO" --limit 200 --json tagName,publishedAt \
+              --jq 'sort_by(.publishedAt) | reverse | .[].tagName' |
             grep -vx beta | tail -n +7 | while read -r t; do
               [ "$t" = "$stable" ] && continue
+              [ "$t" = "$TAG" ] && continue          # never the build just published
               echo "Deleting old release $UPDATES_REPO $t"
               GH_TOKEN="$UPDATES_TOKEN" gh release delete "$t" -R "$UPDATES_REPO" --cleanup-tag --yes
             done

@@ -84,10 +84,11 @@ jobs:
           echo "Official ISOs: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
 
           # Only official versions here: no betas, at most the 3 newest.
-          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease,createdAt \
-            --jq 'sort_by(.createdAt) | reverse | .[] | "\(.tagName) \(.isPrerelease)"' |
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease,publishedAt \
+            --jq 'sort_by(.publishedAt) | reverse | .[] | "\(.tagName) \(.isPrerelease)"' |
           { n=0; while read -r t pre; do
               if [ "$pre" = true ]; then echo "Deleting beta release $t"; gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes; continue; fi
+              [ "$t" = "$tag" ] && { n=$((n + 1)); continue; }   # never the one just made official
               n=$((n + 1))
               [ "$n" -le 3 ] || { echo "Deleting old official release $t"; gh release delete "$t" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes; }
             done; }
