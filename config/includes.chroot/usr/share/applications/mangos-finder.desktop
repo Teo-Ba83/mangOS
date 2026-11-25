@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Mango Finder (beta)
+Name[it]=Mango Finder (beta)
+Comment=Browse your files, laid out like the Mac's Finder (read-only beta)
+Comment[it]=Sfoglia i tuoi file, come il Finder del Mac (beta, solo lettura)
+Exec=mangos-finder %U
+Icon=system-file-manager
+Terminal=false
+Categories=System;FileTools;FileManager;X-MangOS-Launchpad;
+Keywords=finder;files;folders;browse;file;cartelle;sfoglia;
+StartupNotify=true

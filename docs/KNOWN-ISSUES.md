@@ -244,6 +244,17 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   processor (LIBGL_ALWAYS_SOFTWARE=1), and that is remembered. Its output is
   in ~/.cache/mangos/localsend_app.log. Not yet confirmed on the Mac.
 
+## Mango Finder (beta)
+
+- A separate app (Launchpad: Mango Finder (beta)); Thunar stays the file
+  manager for the Dock, the desktop and "Open folder" until Mango Finder is
+  complete. Stage 1 is **read-only**: it never copies, moves, renames or
+  deletes; "Open in Thunar" (right click) is there for that.
+- Coming in later stages: Columns and Gallery views, copy / move / paste /
+  drag and drop / Trash with progress, Get Info, tags, drives' eject button.
+- Large folders: 3,000 files take about 1.6 s on a modern PC; expect several
+  seconds on a 2008 Core 2 Duo (the count is shown while loading).
+
 ## Mango Speed Test
 
 - Measures against Cloudflare's speed test servers (speed.cloudflare.com):

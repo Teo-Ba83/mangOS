@@ -1,0 +1,831 @@
+#!/usr/bin/python3
+"""Mango Finder (beta): a file browser laid out like the Mac's Finder.
+
+usage: mangos-finder [FOLDER or URI]
+
+Stage 1 (read-only: it never changes, moves or deletes a file):
+  - sidebar: Favourites (Recents, Desktop, Documents, Downloads, Pictures,
+    Music, Videos, Home), Locations (drives and USB sticks, Trash)
+  - views: Icons (thumbnails for photos, videos, PDFs through Tumbler) and
+    List (folders open in place with a triangle; Name, Date Modified, Size,
+    Kind); Ctrl+1 / Ctrl+2 like Cmd+1 / Cmd+2
+  - sort by name, date, size or kind, ascending or descending, folders first
+  - search in the folder, show hidden files (Ctrl+Shift+.)
+  - back / forward (Ctrl+[ / Ctrl+]), enclosing folder (Ctrl+Up), open
+    (double click, Enter, Ctrl+Down), Quick Look (Space), Open in Thunar,
+    Copy Path, path bar at the bottom
+Files are read through GIO/GVFS (the same layer Thunar uses), so drives,
+Trash and network places work the same. Thunar stays the default file
+manager; this is a separate app until it is complete."""
+import json, os, subprocess, sys, time, urllib.parse
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk, Pango
+from mangos import tr, load_css
+
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos", "finder.json")
+ATTRS = ("standard::name,standard::display-name,standard::type,standard::icon,standard::size,"
+         "standard::content-type,standard::is-hidden,standard::is-backup,standard::symlink-target,"
+         "standard::target-uri,time::modified,thumbnail::path,thumbnail::failed")
+BATCH = 200
+THUMB_TYPES = ("image/", "video/", "application/pdf")
+
+CSS = b"""
+.fd-side { background: alpha(currentColor, .045); }
+.fd-side list { background: transparent; }
+.fd-side row { padding: 4px 10px; border-radius: 7px; margin: 0 8px; }
+.fd-side row:selected { background: alpha(currentColor, .14); color: @theme_fg_color; }
+.fd-side-head { font-size: 11px; font-weight: 700; opacity: .5; margin: 12px 18px 3px 18px; }
+.fd-status { font-size: 11px; opacity: .65; padding: 3px 10px; border-top: 1px solid alpha(currentColor, .1); }
+.fd-path button { padding: 0 4px; min-height: 18px; font-size: 11px; border: none; box-shadow: none; background: transparent; }
+.fd-empty { opacity: .5; font-size: 14px; }
+iconview.fd-icons { background: @theme_base_color; }
+iconview.fd-icons:selected { background: alpha(#0A84FF, .18); color: @theme_fg_color; border-radius: 6px; }
+"""
+
+# columns of the models
+C_NAME, C_ICON, C_FILE, C_ISDIR, C_SIZE, C_MTIME, C_KIND, C_KEY, C_SIZESTR, C_DATESTR, C_SMALL, C_URI = range(12)
+
+
+def human_size(n):
+    for unit in ("byte", "KB", "MB", "GB", "TB"):
+        if n < 1000 or unit == "TB":
+            return f"{n} byte" if unit == "byte" else f"{n:.1f} {unit}".replace(".", tr(".", ","))
+        n /= 1000.0
+
+
+def nice_date(ts):
+    if not ts:
+        return "—"
+    d = time.localtime(ts)
+    now = time.localtime()
+    if d.tm_year == now.tm_year and d.tm_yday == now.tm_yday:
+        return tr("Today, ", "Oggi, ") + time.strftime("%H:%M", d)
+    if d.tm_year == now.tm_year and d.tm_yday == now.tm_yday - 1:
+        return tr("Yesterday, ", "Ieri, ") + time.strftime("%H:%M", d)
+    return time.strftime("%d %b %Y, %H:%M", d)
+
+
+def load_cfg():
+    c = {"view": "icons", "sort": "name", "desc": False, "hidden": False, "w": 980, "h": 600}
+    try:
+        c.update(json.load(open(CFG)))
+    except (OSError, ValueError):
+        pass
+    return c
+
+
+def save_cfg(c):
+    try:
+        os.makedirs(os.path.dirname(CFG), exist_ok=True)
+        json.dump(c, open(CFG, "w"))
+    except OSError:
+        pass
+
+
+class Thumbnails:
+    """Asks Tumbler (the thumbnail service Thunar uses) for missing thumbnails."""
+    def __init__(self, ready_cb):
+        self.ready_cb = ready_cb
+        self.proxy = None
+        try:
+            self.proxy = Gio.DBusProxy.new_for_bus_sync(
+                Gio.BusType.SESSION, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.thumbnails.Thumbnailer1",
+                "/org/freedesktop/thumbnails/Thumbnailer1", "org.freedesktop.thumbnails.Thumbnailer1", None)
+            self.proxy.connect("g-signal", self.on_signal)
+        except GLib.Error:
+            self.proxy = None
+
+    def queue(self, items):          # [(uri, mime)]
+        if not self.proxy or not items:
+            return
+        for i in range(0, len(items), 50):
+            part = items[i:i + 50]
+            try:
+                self.proxy.call("Queue", GLib.Variant("(asasssu)", ([u for u, _ in part], [m for _, m in part],
+                                                                     "normal", "default", 0)),
+                                Gio.DBusCallFlags.NONE, -1, None, None)
+            except GLib.Error:
+                pass
+
+    def on_signal(self, proxy, sender, signal, params):
+        if signal == "Ready":
+            self.ready_cb(params.unpack()[1])
+
+
+class Finder(Gtk.ApplicationWindow):
+    def __init__(self, app, start):
+        super().__init__(application=app, title="Mango Finder")
+        self.cfg = load_cfg()
+        self.set_default_size(self.cfg["w"], self.cfg["h"])
+        self.set_icon_name("system-file-manager")
+        self.history, self.future = [], []
+        self.folder = None
+        self.load_token = 0
+        self.icon_theme = Gtk.IconTheme.get_default()
+        self.icon_cache = {}
+        self.rows_by_uri = {}
+        self.thumbs = Thumbnails(self.on_thumbs_ready)
+
+        # ---- header bar (the Mac's toolbar)
+        hb = Gtk.HeaderBar(show_close_button=True)
+        self.set_titlebar(hb)
+        nav = Gtk.Box(); nav.get_style_context().add_class("linked")
+        self.back_btn = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
+        self.fwd_btn = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON)
+        self.back_btn.set_tooltip_text(tr("Back", "Indietro")); self.fwd_btn.set_tooltip_text(tr("Forward", "Avanti"))
+        self.back_btn.connect("clicked", lambda *_: self.go_back())
+        self.fwd_btn.connect("clicked", lambda *_: self.go_forward())
+        nav.pack_start(self.back_btn, False, False, 0); nav.pack_start(self.fwd_btn, False, False, 0)
+        hb.pack_start(nav)
+        self.hb = hb
+
+        self.search = Gtk.SearchEntry(placeholder_text=tr("Search", "Cerca"), width_chars=16)
+        self.search.connect("search-changed", lambda *_: self.refilter())
+        hb.pack_end(self.search)
+        sort_btn = Gtk.MenuButton(image=Gtk.Image.new_from_icon_name("view-sort-ascending-symbolic", Gtk.IconSize.BUTTON))
+        sort_btn.set_tooltip_text(tr("Sort By", "Ordina per"))
+        sort_btn.set_popover(self.sort_popover(sort_btn))
+        hb.pack_end(sort_btn)
+        views = Gtk.Box(); views.get_style_context().add_class("linked")
+        self.view_btns = {}
+        group = None
+        for key, icon, tip in (("icons", "view-grid-symbolic", tr("as Icons (Ctrl+1)", "come Icone (Ctrl+1)")),
+                               ("list", "view-list-symbolic", tr("as List (Ctrl+2)", "come Elenco (Ctrl+2)"))):
+            b = Gtk.RadioButton.new_from_widget(group); group = group or b
+            b.set_mode(False); b.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
+            b.set_tooltip_text(tip)
+            b.connect("toggled", lambda w, k=key: w.get_active() and self.set_view(k))
+            views.pack_start(b, False, False, 0); self.view_btns[key] = b
+        hb.pack_end(views)
+
+        # ---- body
+        paned = Gtk.Paned(); self.add(paned)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); side.get_style_context().add_class("fd-side")
+        side.set_size_request(190, -1)
+        ss = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER); ss.add(side)
+        paned.pack1(ss, False, False)
+        self.side = side
+        self.volumes = Gio.VolumeMonitor.get()
+        for sig in ("mount-added", "mount-removed", "volume-added", "volume-removed"):
+            self.volumes.connect(sig, lambda *_: self.fill_sidebar())
+        self.fill_sidebar()
+
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        paned.pack2(right, True, False)
+        # model: shared by both views; the list view uses a tree store for expandable folders
+        self.new_stores()
+        self.filter = self.store.filter_new(); self.filter.set_visible_func(self.visible)
+        self.sorted = Gtk.TreeModelSort(model=self.filter)
+        self.sorted.set_default_sort_func(self.compare)
+
+        self.stack = Gtk.Stack()
+        self.iconview = Gtk.IconView(model=self.sorted, pixbuf_column=C_ICON, text_column=C_NAME,
+                                     item_width=96, column_spacing=6, row_spacing=10, margin=12,
+                                     selection_mode=Gtk.SelectionMode.MULTIPLE, activate_on_single_click=False)
+        self.iconview.get_style_context().add_class("fd-icons")
+        self.iconview.connect("item-activated", lambda v, path: self.activate(self.sorted[path][C_FILE], self.sorted[path][C_ISDIR]))
+        self.iconview.connect("button-press-event", self.on_button)
+        isw = Gtk.ScrolledWindow(); isw.add(self.iconview)
+        self.stack.add_named(isw, "icons")
+
+        self.tree_sorted = Gtk.TreeModelSort(model=self.tree)
+        self.tree_sorted.set_default_sort_func(self.compare)
+        self.listview = Gtk.TreeView(model=self.tree_sorted, enable_search=False, headers_clickable=True)
+        self.listview.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
+        col = Gtk.TreeViewColumn(tr("Name", "Nome")); col.set_expand(True); col.set_resizable(True)
+        pr = Gtk.CellRendererPixbuf(); col.pack_start(pr, False); col.add_attribute(pr, "pixbuf", C_SMALL)
+        tx = Gtk.CellRendererText(ellipsize=Pango.EllipsizeMode.END); col.pack_start(tx, True); col.add_attribute(tx, "text", C_NAME)
+        col.set_clickable(True); col.connect("clicked", lambda *_: self.header_sort("name"))
+        self.listview.append_column(col)
+        for title, idx, key, xalign in ((tr("Date Modified", "Data di modifica"), C_DATESTR, "date", 0),
+                                        (tr("Size", "Dimensione"), C_SIZESTR, "size", 1),
+                                        (tr("Kind", "Tipo"), C_KIND, "kind", 0)):
+            r = Gtk.CellRendererText(xalign=xalign); r.set_property("foreground-rgba", Gdk.RGBA(0.45, 0.45, 0.47, 1))
+            c = Gtk.TreeViewColumn(title, r, text=idx); c.set_resizable(True); c.set_clickable(True)
+            c.set_min_width(110 if key != "size" else 80)
+            c.connect("clicked", lambda _c, k=key: self.header_sort(k))
+            self.listview.append_column(c)
+        self.listview.connect("row-activated", self.on_row_activated)
+        self.listview.connect("test-expand-row", self.on_expand)
+        self.listview.connect("button-press-event", self.on_button)
+        lsw = Gtk.ScrolledWindow(); lsw.add(self.listview)
+        self.stack.add_named(lsw, "list")
+        self.empty = Gtk.Label(); self.empty.get_style_context().add_class("fd-empty")
+        self.stack.add_named(self.empty, "empty")
+        right.pack_start(self.stack, True, True, 0)
+
+        self.pathbar = Gtk.Box(spacing=0); self.pathbar.get_style_context().add_class("fd-path")
+        right.pack_start(self.pathbar, False, False, 0)
+        self.status = Gtk.Label(xalign=0.5); self.status.get_style_context().add_class("fd-status")
+        right.pack_start(self.status, False, False, 0)
+
+        self.connect("key-press-event", self.on_key)
+        self.connect("delete-event", self.on_close)
+        self.view_btns[self.cfg["view"]].set_active(True)
+        self.set_view(self.cfg["view"])
+        self.open_location(start, record=False)
+
+    # ---------------------------------------------------------- models
+    COLS = (str, GdkPixbuf.Pixbuf, object, bool, GObject.TYPE_INT64, GObject.TYPE_INT64, str, str, str, str, GdkPixbuf.Pixbuf, str)
+
+    def new_stores(self):
+        """Fresh stores, not yet shown: filling a model nobody watches is fast
+        (no re-sorting on every row), which matters with thousands of files."""
+        self.store = Gtk.ListStore(*self.COLS)
+        self.tree = Gtk.TreeStore(*self.COLS)
+
+    def attach_models(self):
+        self.filter = self.store.filter_new(); self.filter.set_visible_func(self.visible)
+        self.sorted = Gtk.TreeModelSort(model=self.filter)
+        self.sorted.set_default_sort_func(self.compare)
+        self.sorted.set_sort_column_id(Gtk.TREE_SORTABLE_DEFAULT_SORT_COLUMN_ID, Gtk.SortType.ASCENDING)
+        self.iconview.set_model(self.sorted)
+        self.tree_sorted = Gtk.TreeModelSort(model=self.tree)
+        self.tree_sorted.set_default_sort_func(self.compare)
+        self.tree_sorted.set_sort_column_id(Gtk.TREE_SORTABLE_DEFAULT_SORT_COLUMN_ID, Gtk.SortType.ASCENDING)
+        self.listview.set_model(self.tree_sorted)
+
+    # ---------------------------------------------------------- sidebar
+    def fill_sidebar(self):
+        for c in self.side.get_children():
+            c.destroy()
+        fav = [(tr("Recents", "Recenti"), "recent:///", "document-open-recent-symbolic")]
+        for d, icon in ((GLib.UserDirectory.DIRECTORY_DESKTOP, "user-desktop-symbolic"),
+                        (GLib.UserDirectory.DIRECTORY_DOCUMENTS, "folder-documents-symbolic"),
+                        (GLib.UserDirectory.DIRECTORY_DOWNLOAD, "folder-download-symbolic"),
+                        (GLib.UserDirectory.DIRECTORY_PICTURES, "folder-pictures-symbolic"),
+                        (GLib.UserDirectory.DIRECTORY_MUSIC, "folder-music-symbolic"),
+                        (GLib.UserDirectory.DIRECTORY_VIDEOS, "folder-videos-symbolic")):
+            p = GLib.get_user_special_dir(d)
+            if p and os.path.isdir(p) and os.path.realpath(p) != os.path.realpath(GLib.get_home_dir()):
+                fav.append((os.path.basename(p), GLib.filename_to_uri(p), icon))
+        fav.append((GLib.get_user_name(), GLib.filename_to_uri(GLib.get_home_dir()), "user-home-symbolic"))
+        self.side_section(tr("Favourites", "Preferiti"), fav)
+        loc = []
+        for m in self.volumes.get_mounts():
+            if m.is_shadowed():
+                continue
+            loc.append((m.get_name(), m.get_root().get_uri(), "drive-removable-media-symbolic" if m.can_eject() else "drive-harddisk-symbolic"))
+        for v in self.volumes.get_volumes():
+            if v.get_mount() is None and v.can_mount():
+                loc.append((v.get_name(), ("volume", v), "drive-removable-media-symbolic"))
+        loc.append((tr("Computer", "Computer"), "file:///", "computer-symbolic"))
+        loc.append((tr("Trash", "Cestino"), "trash:///", "user-trash-symbolic"))
+        self.side_section(tr("Locations", "Posizioni"), loc)
+        self.side.show_all()
+        if self.folder:
+            self.mark_sidebar()
+
+    def side_section(self, title, items):
+        h = Gtk.Label(label=title, xalign=0); h.get_style_context().add_class("fd-side-head")
+        self.side.pack_start(h, False, False, 0)
+        lb = Gtk.ListBox(); lb.connect("row-activated", self.on_side)
+        for name, target, icon in items:
+            row = Gtk.ListBoxRow(); row.target = target
+            b = Gtk.Box(spacing=8)
+            img = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU)
+            img.get_style_context().add_class("dim-label")
+            b.pack_start(img, False, False, 0)
+            b.pack_start(Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.END), True, True, 0)
+            row.add(b); lb.add(row)
+        self.side.pack_start(lb, False, False, 0)
+
+    def on_side(self, lb, row):
+        t = row.target
+        if isinstance(t, tuple):                     # an unmounted volume: mount it, then open it
+            def mounted(v, res):
+                try:
+                    v.mount_finish(res)
+                except GLib.Error as e:
+                    self.message(tr("Cannot open this drive: ", "Non riesco ad aprire questa unità: ") + e.message)
+                    return
+                if v.get_mount():
+                    self.open_location(v.get_mount().get_root())
+            t[1].mount(Gio.MountMountFlags.NONE, Gtk.MountOperation.new(self), None, mounted)
+            return
+        self.open_location(t)
+
+    def mark_sidebar(self):
+        uri = self.folder.get_uri().rstrip("/")
+        for lb in [c for c in self.side.get_children() if isinstance(c, Gtk.ListBox)]:
+            lb.unselect_all()
+            for row in lb.get_children():
+                if isinstance(row.target, str) and row.target.rstrip("/") == uri:
+                    lb.select_row(row)
+
+    # ---------------------------------------------------------- navigation
+    def open_location(self, where, record=True):
+        f = where if isinstance(where, Gio.File) else (Gio.File.new_for_uri(where) if "://" in where
+                                                       else Gio.File.new_for_path(where))
+        if record and self.folder is not None and not self.folder.equal(f):
+            self.history.append(self.folder); self.future.clear()
+        self.folder = f
+        self.search.set_text("")
+        self.back_btn.set_sensitive(bool(self.history)); self.fwd_btn.set_sensitive(bool(self.future))
+        self.load()
+
+    def go_back(self):
+        if self.history:
+            self.future.append(self.folder)
+            self.folder = self.history.pop(); self.back_btn.set_sensitive(bool(self.history)); self.fwd_btn.set_sensitive(True)
+            self.load()
+
+    def go_forward(self):
+        if self.future:
+            self.history.append(self.folder)
+            self.folder = self.future.pop(); self.fwd_btn.set_sensitive(bool(self.future)); self.back_btn.set_sensitive(True)
+            self.load()
+
+    def go_up(self):
+        p = self.folder.get_parent()
+        if p is not None:
+            self.open_location(p)
+
+    def activate(self, info_file, is_dir):
+        f = info_file
+        if is_dir:
+            self.open_location(f)
+            return
+        try:
+            Gio.AppInfo.launch_default_for_uri(f.get_uri(), None)
+        except GLib.Error as e:
+            self.message(tr("Cannot open this file: ", "Non riesco ad aprire questo file: ") + e.message)
+
+    # ---------------------------------------------------------- loading
+    def load(self):
+        self.load_token += 1
+        token = self.load_token
+        self.iconview.set_model(None); self.listview.set_model(None)
+        self.new_stores(); self.rows_by_uri = {}; self.hidden_rows = set()
+        name = self.display_name(self.folder)
+        self.set_title(name); self.hb.set_title(name)
+        self.fill_pathbar(); self.mark_sidebar()
+        self.status.set_text(tr("Loading…", "Caricamento…"))
+        self.loaded, self.pending_thumbs = 0, []
+        self.load_started = time.monotonic()
+        self.folder.enumerate_children_async(ATTRS, Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, None,
+                                             self.on_enum, (token, self.folder, None))
+
+    def display_name(self, f):
+        try:
+            return f.query_info("standard::display-name", Gio.FileQueryInfoFlags.NONE, None).get_display_name()
+        except GLib.Error:
+            return f.get_basename() or f.get_uri()
+
+    def on_enum(self, src, res, data):
+        token, folder, parent = data
+        try:
+            en = src.enumerate_children_finish(res)
+        except GLib.Error as e:
+            if token == self.load_token and parent is None:
+                self.show_empty(tr("This folder cannot be opened: ", "Questa cartella non si può aprire: ") + e.message)
+            return
+        en.next_files_async(BATCH, GLib.PRIORITY_DEFAULT, None, self.on_batch, (token, folder, parent, en))
+
+    def on_batch(self, en, res, data):
+        token, folder, parent, _ = data
+        if token != self.load_token:
+            en.close_async(GLib.PRIORITY_LOW, None, None)
+            return
+        try:
+            infos = en.next_files_finish(res)
+        except GLib.Error:
+            infos = []
+        for info in infos:
+            self.add_entry(folder, info, parent)
+        if parent is None and infos:
+            self.status.set_text(tr("Loading… ", "Caricamento… ") + str(self.loaded))
+        if infos:
+            en.next_files_async(BATCH, GLib.PRIORITY_DEFAULT, None, self.on_batch, data)
+            return
+        en.close_async(GLib.PRIORITY_LOW, None, None)
+        if parent is None:
+            self.attach_models()
+            self.finished_loading()
+        else:
+            self.remove_placeholder(parent)
+        self.thumbs.queue(self.pending_thumbs); self.pending_thumbs = []
+
+    def row_values(self, folder, info):
+        name = info.get_display_name()
+        ftype = info.get_file_type()
+        target = info.get_attribute_string("standard::target-uri")
+        child = Gio.File.new_for_uri(target) if target else folder.get_child(info.get_name())
+        is_dir = ftype in (Gio.FileType.DIRECTORY, Gio.FileType.MOUNTABLE) or (
+            ftype == Gio.FileType.SYMBOLIC_LINK and child.query_file_type(Gio.FileQueryInfoFlags.NONE, None) == Gio.FileType.DIRECTORY)
+        ctype = info.get_content_type() or ""
+        size = 0 if is_dir else info.get_size()
+        dt = info.get_modification_date_time()
+        mtime = dt.to_unix() if dt else 0
+        kind = tr("Folder", "Cartella") if is_dir else self.describe(ctype)
+        big = self.icon_for(info, 64, child, ctype)
+        small = self.icon_for(info, 16, child, ctype, thumb=False)
+        hidden = info.get_is_hidden() or info.get_is_backup()
+        return [name, big, child, is_dir, size, mtime, kind, ("0" if is_dir else "1") + name.lower(),
+                "—" if is_dir else human_size(size), nice_date(mtime), small, child.get_uri()], hidden, ctype
+
+    def describe(self, ctype):
+        cache = self.__dict__.setdefault("kind_cache", {})
+        if ctype not in cache:
+            cache[ctype] = Gio.content_type_get_description(ctype) if ctype else ""
+        return cache[ctype]
+
+    def add_entry(self, folder, info, parent):
+        vals, hidden, ctype = self.row_values(folder, info)
+        if parent is None:
+            if hidden:                       # before appending: the filter decides on insert
+                self.hidden_rows.add(vals[C_URI])
+            it = self.store.append(vals)
+            if not (hidden and not self.cfg["hidden"]):
+                tit = self.tree.append(None, vals)
+                if vals[C_ISDIR]:
+                    self.tree.append(tit, [""] + [None, None, False, 0, 0, "", "", "", "", None, ""])  # placeholder: shows the triangle
+                self.rows_by_uri.setdefault(vals[C_URI], []).append(("tree", Gtk.TreeRowReference.new(self.tree, self.tree.get_path(tit))))
+            self.rows_by_uri.setdefault(vals[C_URI], []).append(("store", Gtk.TreeRowReference.new(self.store, self.store.get_path(it))))
+            self.loaded += 1
+        else:
+            if hidden and not self.cfg["hidden"]:
+                return
+            tit = self.tree.append(parent, vals)
+            if vals[C_ISDIR]:
+                self.tree.append(tit, [""] + [None, None, False, 0, 0, "", "", "", "", None, ""])
+            self.rows_by_uri.setdefault(vals[C_URI], []).append(("tree", Gtk.TreeRowReference.new(self.tree, self.tree.get_path(tit))))
+        if not info.get_attribute_byte_string("thumbnail::path") and not info.get_attribute_boolean("thumbnail::failed") \
+                and ctype.startswith(THUMB_TYPES) and vals[C_FILE].get_uri_scheme() == "file":
+            self.pending_thumbs.append((vals[C_URI], ctype))
+
+    def finished_loading(self):
+        if os.environ.get("MANGOS_FINDER_DEBUG"):
+            print(f"loaded {self.loaded} items in {time.monotonic() - self.load_started:.2f} s", flush=True)
+        n = sum(1 for r in self.store if self.visible(self.store, r.iter, None))
+        if n == 0 and not self.search.get_text():
+            self.show_empty(tr("This folder is empty", "Questa cartella è vuota"))
+        else:
+            self.stack.set_visible_child_name(self.cfg["view"])
+        self.update_status()
+
+    def show_empty(self, text):
+        self.empty.set_text(text)
+        self.stack.set_visible_child_name("empty")
+        self.update_status()
+
+    def update_status(self):
+        n = sum(1 for r in self.store if self.visible(self.store, r.iter, None))
+        free = ""
+        try:
+            fi = self.folder.query_filesystem_info("filesystem::free", None)
+            if fi.has_attribute("filesystem::free"):
+                free = tr(", ", ", ") + human_size(fi.get_attribute_uint64("filesystem::free")) + tr(" available", " disponibili")
+        except GLib.Error:
+            pass
+        items = tr(f"{n} item" + ("s" if n != 1 else ""), f"{n} element" + ("i" if n != 1 else "o"))
+        self.status.set_text(items + free)
+
+    # list view: expand folders in place
+    def on_expand(self, view, it, path):
+        cit = self.tree_sorted.convert_iter_to_child_iter(it)
+        first = self.tree.iter_children(cit)
+        if first is not None and self.tree[first][C_FILE] is None:      # still the placeholder
+            folder = self.tree[cit][C_FILE]
+            folder.enumerate_children_async(ATTRS, Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, None,
+                                            self.on_enum, (self.load_token, folder,
+                                                           self.tree.get_iter(self.tree.get_path(cit))))
+        return False
+
+    def remove_placeholder(self, parent):
+        try:
+            it = self.tree.iter_children(parent)
+        except (TypeError, ValueError):
+            return
+        while it is not None:
+            if self.tree[it][C_FILE] is None:
+                self.tree.remove(it)
+                return
+            it = self.tree.iter_next(it)
+
+    # ---------------------------------------------------------- icons and thumbnails
+    def icon_for(self, info, size, child, ctype, thumb=True):
+        tp = info.get_attribute_byte_string("thumbnail::path") if thumb else None
+        if tp:
+            pb = self.load_thumb(tp, size)
+            if pb:
+                return pb
+        gicon = info.get_icon()
+        key = (gicon.to_string() if gicon else "", size)
+        if key in self.icon_cache:
+            return self.icon_cache[key]
+        pb = None
+        if gicon:
+            ii = self.icon_theme.lookup_by_gicon(gicon, size, Gtk.IconLookupFlags.FORCE_SIZE)
+            if ii:
+                try:
+                    pb = ii.load_icon()
+                except GLib.Error:
+                    pb = None
+        if pb is None:
+            pb = self.icon_theme.load_icon("text-x-generic", size, Gtk.IconLookupFlags.FORCE_SIZE)
+        self.icon_cache[key] = pb
+        return pb
+
+    def load_thumb(self, path, size):
+        try:
+            return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
+        except GLib.Error:
+            return None
+
+    def on_thumbs_ready(self, uris):
+        for uri in uris:
+            f = Gio.File.new_for_uri(uri)
+            try:
+                info = f.query_info("thumbnail::path", Gio.FileQueryInfoFlags.NONE, None)
+            except GLib.Error:
+                continue
+            tp = info.get_attribute_byte_string("thumbnail::path")
+            pb = self.load_thumb(tp, 64) if tp else None
+            if not pb:
+                continue
+            for kind, ref in self.rows_by_uri.get(uri, []):
+                if kind == "store" and ref.valid():
+                    self.store.set_value(self.store.get_iter(ref.get_path()), C_ICON, pb)
+
+    # ---------------------------------------------------------- sorting, filtering, views
+    def compare(self, model, a, b, _data=None):
+        ra, rb = model[a], model[b]
+        if ra[C_FILE] is None or rb[C_FILE] is None:
+            return 0
+        if ra[C_ISDIR] != rb[C_ISDIR]:                 # folders first, whatever the order
+            return -1 if ra[C_ISDIR] else 1
+        k = self.cfg["sort"]
+        if k == "date":
+            x, y = ra[C_MTIME], rb[C_MTIME]
+        elif k == "size":
+            x, y = ra[C_SIZE], rb[C_SIZE]
+        elif k == "kind":
+            x, y = (ra[C_KIND] or "").lower(), (rb[C_KIND] or "").lower()
+        else:
+            x, y = GLib.utf8_collate_key_for_filename(ra[C_NAME], -1), GLib.utf8_collate_key_for_filename(rb[C_NAME], -1)
+        if x == y and k != "name":
+            x, y = GLib.utf8_collate_key_for_filename(ra[C_NAME], -1), GLib.utf8_collate_key_for_filename(rb[C_NAME], -1)
+        r = (x > y) - (x < y)
+        return -r if self.cfg["desc"] else r
+
+    def resort(self):
+        for m in (self.sorted, self.tree_sorted):
+            m.set_default_sort_func(self.compare)
+            m.set_sort_column_id(Gtk.TREE_SORTABLE_DEFAULT_SORT_COLUMN_ID, Gtk.SortType.ASCENDING)
+        save_cfg(self.cfg)
+
+    def header_sort(self, key):
+        if self.cfg["sort"] == key:
+            self.cfg["desc"] = not self.cfg["desc"]
+        else:
+            self.cfg["sort"], self.cfg["desc"] = key, key in ("date", "size")
+        self.sync_sort_menu(); self.resort()
+
+    def sort_popover(self, relative):
+        pop = Gtk.Popover(relative_to=relative)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin=8, spacing=2)
+        lab = Gtk.Label(label=tr("Sort By", "Ordina per"), xalign=0); lab.set_opacity(0.6)
+        box.pack_start(lab, False, False, 2)
+        self.sort_radios = {}
+        group = None
+        for key, label in (("name", tr("Name", "Nome")), ("date", tr("Date Modified", "Data di modifica")),
+                           ("size", tr("Size", "Dimensione")), ("kind", tr("Kind", "Tipo"))):
+            r = Gtk.RadioButton.new_with_label_from_widget(group, label); group = group or r
+            r.connect("toggled", lambda w, k=key: w.get_active() and self.set_sort(k))
+            box.pack_start(r, False, False, 0); self.sort_radios[key] = r
+        box.pack_start(Gtk.Separator(margin_top=4, margin_bottom=4), False, False, 0)
+        self.desc_check = Gtk.CheckButton(label=tr("Descending", "Decrescente"))
+        self.desc_check.connect("toggled", lambda w: self.set_desc(w.get_active()))
+        box.pack_start(self.desc_check, False, False, 0)
+        self.hidden_check = Gtk.CheckButton(label=tr("Show Hidden Files", "Mostra file nascosti"))
+        self.hidden_check.connect("toggled", lambda w: self.set_hidden(w.get_active()))
+        box.pack_start(self.hidden_check, False, False, 0)
+        box.show_all(); pop.add(box)
+        self.updating_menu = True
+        self.sync_sort_menu()
+        self.updating_menu = False
+        return pop
+
+    def sync_sort_menu(self):
+        self.updating_menu = True
+        self.sort_radios[self.cfg["sort"]].set_active(True)
+        self.desc_check.set_active(self.cfg["desc"])
+        self.hidden_check.set_active(self.cfg["hidden"])
+        self.updating_menu = False
+
+    def set_sort(self, key):
+        if getattr(self, "updating_menu", False):
+            return
+        self.cfg["sort"] = key; self.resort()
+
+    def set_desc(self, on):
+        if getattr(self, "updating_menu", False):
+            return
+        self.cfg["desc"] = on; self.resort()
+
+    def set_hidden(self, on):
+        if getattr(self, "updating_menu", False) or on == self.cfg["hidden"]:
+            return
+        self.cfg["hidden"] = on; save_cfg(self.cfg)
+        self.load()
+
+    def visible(self, model, it, _data):
+        uri = model[it][C_URI]
+        if not self.cfg["hidden"] and uri in getattr(self, "hidden_rows", set()):
+            return False
+        q = self.search.get_text().strip().lower() if hasattr(self, "search") else ""
+        return not q or q in (model[it][C_NAME] or "").lower()
+
+    def refilter(self):
+        # a new filter instead of refilter(): refiltering under a sort model
+        # trips a GTK reference-count bug (criticals, sometimes wrong rows)
+        self.iconview.set_model(None)
+        self.filter = self.store.filter_new(); self.filter.set_visible_func(self.visible)
+        self.sorted = Gtk.TreeModelSort(model=self.filter)
+        self.sorted.set_default_sort_func(self.compare)
+        self.sorted.set_sort_column_id(Gtk.TREE_SORTABLE_DEFAULT_SORT_COLUMN_ID, Gtk.SortType.ASCENDING)
+        self.iconview.set_model(self.sorted)
+        q = self.search.get_text().strip().lower()
+        # the list view shows the same matches (top level); rebuilt unattached
+        self.listview.set_model(None)
+        self.tree = Gtk.TreeStore(*self.COLS)
+        for r in self.store:
+            if self.visible(self.store, r.iter, None):
+                vals = [r[i] for i in range(12)]
+                tit = self.tree.append(None, vals)
+                if vals[C_ISDIR]:
+                    self.tree.append(tit, [""] + [None, None, False, 0, 0, "", "", "", "", None, ""])
+        self.tree_sorted = Gtk.TreeModelSort(model=self.tree)
+        self.tree_sorted.set_default_sort_func(self.compare)
+        self.tree_sorted.set_sort_column_id(Gtk.TREE_SORTABLE_DEFAULT_SORT_COLUMN_ID, Gtk.SortType.ASCENDING)
+        self.listview.set_model(self.tree_sorted)
+        if self.stack.get_visible_child_name() == "empty" and q:
+            self.stack.set_visible_child_name(self.cfg["view"])
+        self.update_status()
+
+    def set_view(self, key):
+        self.cfg["view"] = key; save_cfg(self.cfg)
+        if self.stack.get_visible_child_name() != "empty":
+            self.stack.set_visible_child_name(key)
+        if self.view_btns[key].get_active() is False:
+            self.view_btns[key].set_active(True)
+        self.resort()
+
+    # ---------------------------------------------------------- path bar, selection, menus
+    def fill_pathbar(self):
+        for c in self.pathbar.get_children():
+            c.destroy()
+        chain, f = [], self.folder
+        while f is not None:
+            chain.insert(0, f)
+            f = f.get_parent()
+        for i, f in enumerate(chain[-6:]):
+            if i:
+                sep = Gtk.Label(label="›"); sep.set_opacity(0.5); self.pathbar.pack_start(sep, False, False, 0)
+            b = Gtk.Button(label=self.display_name(f) if f.get_parent() else tr("Computer", "Computer"),
+                           relief=Gtk.ReliefStyle.NONE)
+            b.connect("clicked", lambda _b, x=f: self.open_location(x))
+            self.pathbar.pack_start(b, False, False, 0)
+        self.pathbar.show_all()
+
+    def selected(self):
+        """[(Gio.File, is_dir)] of the selection in the current view."""
+        out = []
+        if self.cfg["view"] == "icons":
+            for p in self.iconview.get_selected_items():
+                out.append((self.sorted[p][C_FILE], self.sorted[p][C_ISDIR]))
+        else:
+            model, paths = self.listview.get_selection().get_selected_rows()
+            for p in paths:
+                if model[p][C_FILE] is not None:
+                    out.append((model[p][C_FILE], model[p][C_ISDIR]))
+        return out
+
+    def on_row_activated(self, view, path, col):
+        r = self.tree_sorted[path]
+        if r[C_FILE] is not None:
+            self.activate(r[C_FILE], r[C_ISDIR])
+
+    def on_button(self, w, ev):
+        if ev.button != 3:
+            return False
+        if w is self.iconview:
+            p = w.get_path_at_pos(int(ev.x), int(ev.y))
+            if p is not None and not w.path_is_selected(p):
+                w.unselect_all(); w.select_path(p)
+        else:
+            hit = w.get_path_at_pos(int(ev.x), int(ev.y))
+            if hit and not w.get_selection().path_is_selected(hit[0]):
+                w.get_selection().unselect_all(); w.get_selection().select_path(hit[0])
+        self.context_menu(ev)
+        return True
+
+    def context_menu(self, ev):
+        sel = self.selected()
+        m = Gtk.Menu()
+
+        def item(label, cb, sensitive=True):
+            it = Gtk.MenuItem(label=label); it.connect("activate", lambda *_: cb()); it.set_sensitive(sensitive)
+            m.append(it)
+        if sel:
+            item(tr("Open", "Apri"), lambda: [self.activate(f, d) for f, d in sel[:10]])
+            item(tr("Quick Look", "Anteprima rapida"), self.quicklook, any(not d for _, d in sel))
+            m.append(Gtk.SeparatorMenuItem())
+            item(tr("Copy Path", "Copia percorso"), self.copy_path)
+        item(tr("Open in Thunar", "Apri in Thunar"), self.open_in_thunar)
+        m.append(Gtk.SeparatorMenuItem())
+        item(tr("Show Hidden Files", "Mostra file nascosti") if not self.cfg["hidden"] else tr("Hide Hidden Files", "Nascondi file nascosti"),
+             lambda: self.hidden_check.set_active(not self.cfg["hidden"]))
+        m.show_all(); m.popup_at_pointer(ev)
+
+    def quicklook(self):
+        files = [f.get_path() for f, d in self.selected() if not d and f.get_path()]
+        if files:
+            subprocess.Popen(["mangos-quicklook"] + files[:20])
+
+    def copy_path(self):
+        paths = [f.get_path() or f.get_uri() for f, _ in self.selected()]
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("\n".join(paths), -1)
+
+    def open_in_thunar(self):
+        try:
+            subprocess.Popen(["thunar", self.folder.get_path() or self.folder.get_uri()])
+        except OSError:
+            pass
+
+    def message(self, text):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.OK, text=text)
+        d.run(); d.destroy()
+
+    # ---------------------------------------------------------- keyboard (Cmd is Ctrl on MangOS)
+    def on_key(self, w, ev):
+        k = Gdk.keyval_name(ev.keyval) or ""
+        ctrl = bool(ev.state & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(ev.state & Gdk.ModifierType.SHIFT_MASK)
+        if self.search.has_focus() and not ctrl:
+            if k == "Escape":
+                self.search.set_text(""); self.grab_view()
+                return True
+            return False
+        if ctrl and k in ("1", "2"):
+            self.view_btns["icons" if k == "1" else "list"].set_active(True); return True
+        if ctrl and k in ("bracketleft",):
+            self.go_back(); return True
+        if ctrl and k in ("bracketright",):
+            self.go_forward(); return True
+        if ctrl and k == "Up":
+            self.go_up(); return True
+        if (ctrl and k == "Down") or (not ctrl and k in ("Return", "KP_Enter")):
+            for f, d in self.selected()[:10]:
+                self.activate(f, d)
+            return True
+        if ctrl and shift and k in ("period", "greater"):
+            self.hidden_check.set_active(not self.cfg["hidden"]); return True
+        if ctrl and k.lower() == "f":
+            self.search.grab_focus(); return True
+        if ctrl and shift and k.lower() == "c":
+            self.copy_path(); return True
+        if not ctrl and k == "space":
+            self.quicklook(); return True
+        if ctrl and k.lower() in ("w", "q"):
+            self.close(); return True
+        if k == "BackSpace" and not ctrl:
+            self.go_up(); return True
+        return False
+
+    def grab_view(self):
+        (self.iconview if self.cfg["view"] == "icons" else self.listview).grab_focus()
+
+    def on_close(self, *_):
+        w, h = self.get_size()
+        self.cfg["w"], self.cfg["h"] = w, h
+        save_cfg(self.cfg)
+        return False
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.mangos.Finder",
+                         flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.NON_UNIQUE)
+
+    def setup(self):
+        load_css()
+        p = Gtk.CssProvider(); p.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def do_activate(self):
+        self.setup()
+        Finder(self, GLib.get_home_dir()).show_all()
+
+    def do_open(self, files, n, hint):
+        self.setup()
+        for f in files:
+            Finder(self, f).show_all()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

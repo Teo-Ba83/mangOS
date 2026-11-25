@@ -6,6 +6,10 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-25 23:52
+en: New Mango Finder (beta, Launchpad): browse files like the Mac's Finder, Icons and List views, sort, search, Quick Look. Read-only for now: Thunar stays the file manager.
+it: Nuovo Mango Finder (beta, Launchpad): sfoglia i file come il Finder del Mac, viste Icone ed Elenco, ordinamento, ricerca, Anteprima rapida. Per ora solo lettura: Thunar resta il gestore dei file.
+
 ## 2026-11-25 22:51
 en: Keyboard backlight on the Macs that have one: Control Center slider, off after a while without typing, follows the room's light, settings in System Settings.
 it: Retroilluminazione della tastiera sui Mac che ce l'hanno: cursore nel Centro di controllo, si spegne dopo un po' che non scrivi, segue la luce della stanza, impostazioni in Impostazioni.
