@@ -37,6 +37,14 @@ scale.cc-scale slider { min-width: 22px; min-height: 22px; margin: 0; border-rad
 """
 
 
+def kbd_present():
+    import glob
+    return bool(glob.glob("/sys/class/leds/*kbd_backlight*"))
+
+
+KBD_PRESENT = kbd_present()
+
+
 def run(*args, timeout=6):
     try:
         p = subprocess.run(list(args), capture_output=True, text=True, env=ENV, timeout=timeout)
@@ -205,6 +213,12 @@ class Panel(Gtk.Window):
                                                     "display-brightness-symbolic", self.on_bright, low=10)
         self.vol_tile, self.vol = self.slider(box, tr("Sound", "Suono"), "audio-volume-high-symbolic",
                                               self.on_vol, button_cb=lambda *_: self.launch(["pavucontrol"]))
+        # keyboard backlight: only on Macs that have one
+        self.kbd = None
+        if KBD_PRESENT:
+            self.kbd_tile, self.kbd = self.slider(box, tr("Keyboard Brightness", "Luminosità tastiera"),
+                                                  "keyboard-brightness-symbolic", self.on_kbd,
+                                                  button_cb=lambda *_: self.launch(["mangos-kbdlight", "--settings"]))
 
         # small buttons
         row = Gtk.Box(spacing=10, homogeneous=True)
@@ -352,6 +366,12 @@ class Panel(Gtk.Window):
             self.vol_tile.hide()
         else:
             self.vol_tile.show(); self.vol.set_value(0 if muted else v)
+        if self.kbd is not None:
+            try:
+                import json
+                self.kbd.set_value(json.load(open(os.path.join(CFG, "kbdlight.conf"))).get("level", 60))
+            except (OSError, ValueError):
+                self.kbd.set_value(60)
         self.updating = False
         return False
 
@@ -416,6 +436,9 @@ class Panel(Gtk.Window):
 
     def on_bright(self, v):
         self.queue("bright", set_brightness, v)
+
+    def on_kbd(self, v):
+        self.queue("kbd", lambda x: run("mangos-kbdlight", "set", str(x)), v)
 
     def on_vol(self, v):
         self.queue("vol", set_volume, v)

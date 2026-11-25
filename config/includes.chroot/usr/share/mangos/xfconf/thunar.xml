@@ -1,8 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- MangOS Finder (Thunar): laid out like the Mac's Finder.
+     Toolbar: back, forward, the path, the view buttons (icons, list, compact
+     list) and search; the menus (View > Sort By...) are in the top bar.
+     List view: folders open in place with a triangle, columns Name, Date
+     Modified, Size, Kind, like the Mac's list view. -->
 <channel name="thunar" version="1.0">
   <property name="last-view" type="string" value="ThunarIconView"/>
   <property name="last-show-hidden" type="bool" value="false"/>
   <property name="misc-single-click" type="bool" value="false"/>
   <property name="misc-thumbnail-mode" type="string" value="THUNAR_THUMBNAIL_MODE_ONLY_LOCAL"/>
   <property name="last-location-bar" type="string" value="ThunarLocationButtons"/>
+  <property name="last-toolbar-items" type="string" value="menu:0,back:1,forward:1,open-parent:0,open-home:0,new-tab:0,new-window:0,toggle-split-view:0,undo:0,redo:0,zoom-out:0,zoom-in:0,zoom-reset:0,location-bar:1,view-as-icons:1,view-as-detailed-list:1,view-as-compact-list:1,view-switcher:0,reload:0,search:1"/>
+  <property name="misc-expandable-folders" type="bool" value="true"/>
+  <property name="last-details-view-visible-columns" type="string" value="THUNAR_COLUMN_NAME,THUNAR_COLUMN_DATE_MODIFIED,THUNAR_COLUMN_SIZE,THUNAR_COLUMN_TYPE"/>
+  <property name="last-details-view-column-order" type="string" value="THUNAR_COLUMN_NAME,THUNAR_COLUMN_DATE_MODIFIED,THUNAR_COLUMN_SIZE,THUNAR_COLUMN_TYPE,THUNAR_COLUMN_DATE_ACCESSED,THUNAR_COLUMN_DATE_CREATED,THUNAR_COLUMN_DATE_DELETED,THUNAR_COLUMN_GROUP,THUNAR_COLUMN_LOCATION,THUNAR_COLUMN_MIME_TYPE,THUNAR_COLUMN_OWNER,THUNAR_COLUMN_PERMISSIONS,THUNAR_COLUMN_RECENCY,THUNAR_COLUMN_SIZE_IN_BYTES"/>
+  <property name="misc-date-style" type="string" value="THUNAR_DATE_STYLE_SIMPLE"/>
+  <property name="last-statusbar-visible" type="bool" value="true"/>
+  <property name="misc-folders-first" type="bool" value="true"/>
 </channel>

@@ -86,6 +86,20 @@ for f in /usr/share/applications/*ocalsend*.desktop; do
   fi
 done
 
+# Finder (Thunar) laid out like the Mac's (0.3): view buttons in the toolbar,
+# list view with folders that open in place and the Mac's columns. Once per
+# user; later changes made in Thunar are kept.
+if [ ! -e "$cfg/finder-mac" ]; then
+  tq() { xfconf-query -c thunar -p "$1" -n -t "$2" -s "$3" 2>/dev/null || true; }
+  tq /last-toolbar-items string "menu:0,back:1,forward:1,open-parent:0,open-home:0,new-tab:0,new-window:0,toggle-split-view:0,undo:0,redo:0,zoom-out:0,zoom-in:0,zoom-reset:0,location-bar:1,view-as-icons:1,view-as-detailed-list:1,view-as-compact-list:1,view-switcher:0,reload:0,search:1"
+  tq /misc-expandable-folders bool true
+  tq /last-details-view-visible-columns string "THUNAR_COLUMN_NAME,THUNAR_COLUMN_DATE_MODIFIED,THUNAR_COLUMN_SIZE,THUNAR_COLUMN_TYPE"
+  tq /misc-date-style string THUNAR_DATE_STYLE_SIMPLE
+  tq /last-statusbar-visible bool true
+  thunar -q 2>/dev/null || true
+  touch "$cfg/finder-mac"
+fi
+
 # The dock's Settings item now opens MangOS System Settings (gear icon).
 di=$HOME/.config/plank/dock1/launchers/xfce-settings-manager.dockitem
 if [ -f "$di" ] && grep -q 'xfce-settings-manager.desktop' "$di"; then

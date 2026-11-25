@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=MangOS Keyboard Backlight
+Comment=Turns the keyboard light off when idle and follows the room's light (Macs with a backlit keyboard only)
+Exec=mangos-kbdlight
+NoDisplay=true
+OnlyShowIn=XFCE;

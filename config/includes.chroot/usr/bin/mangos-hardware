@@ -88,6 +88,13 @@ def report():
 
     bl = [os.path.basename(p) for p in glob.glob("/sys/class/backlight/*")]
     add(tr("Brightness", "Luminosità"), ", ".join(bl) if bl else tr("no control found", "nessun controllo trovato"))
+    kbd = glob.glob("/sys/class/leds/*kbd_backlight*")
+    if kbd:
+        light = read("/sys/devices/platform/applesmc.768/light")
+        add(tr("Keyboard light", "Luce tastiera"), os.path.basename(kbd[0]) +
+            (tr(", ambient light sensor found", ", sensore di luce ambientale trovato") if light else ""))
+    else:
+        add(tr("Keyboard light", "Luce tastiera"), tr("none (keyboard not backlit)", "nessuna (tastiera non retroilluminata)"))
     devs = read("/proc/bus/input/devices")
     pad = next((n for n in ("bcm5974", "appletouch") if n in devs), None)
     if not pad and re.search(r'N: Name=".*(Touchpad|Trackpad)', devs, re.I):

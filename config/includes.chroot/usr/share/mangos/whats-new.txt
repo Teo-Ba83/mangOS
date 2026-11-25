@@ -6,6 +6,12 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-25 22:51
+en: Keyboard backlight on the Macs that have one: Control Center slider, off after a while without typing, follows the room's light, settings in System Settings.
+it: Retroilluminazione della tastiera sui Mac che ce l'hanno: cursore nel Centro di controllo, si spegne dopo un po' che non scrivi, segue la luce della stanza, impostazioni in Impostazioni.
+en: Finder: view buttons (icons, list, compact list) in the toolbar; in the list, folders open in place with a triangle, with the Mac's columns.
+it: Finder: pulsanti per le viste (icone, elenco, elenco compatto) nella barra; nell'elenco le cartelle si aprono sul posto con il triangolino, con le colonne del Mac.
+
 ## 2026-11-24 16:28
 en: MangOS 0.3: the Mac apps (Notes, Passwords, Calendar and Contacts, Calculator, Mango Speed Test, Notification Center), support for the Intel Macs from 2006 to 2012, and What's New after every update.
 it: MangOS 0.3: le app in stile Mac (Note, Password, Calendario e Contatti, Calcolatrice, Mango Speed Test, Centro notifiche), il supporto ai Mac Intel dal 2006 al 2012 e le novità dopo ogni aggiornamento.

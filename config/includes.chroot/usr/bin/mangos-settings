@@ -74,6 +74,8 @@ GROUPS = [
     [
         ("keyboard", "Keyboard", "Tastiera", "#8E8E93", "input-keyboard-symbolic",
          ["xfce4-keyboard-settings"], True, "keyboard shortcuts layout tastiera scorciatoie"),
+        ("kbdlight", "Keyboard Backlight", "Retroilluminazione tastiera", "#8E8E93", "keyboard-brightness-symbolic",
+         ["mangos-kbdlight", "--settings"], False, "keyboard backlight light brightness retroilluminazione tastiera luce"),
         ("mouse", "Mouse & Trackpad", "Mouse e trackpad", "#8E8E93", "input-touchpad-symbolic",
          ["xfce4-mouse-settings"], True, "mouse trackpad touchpad pointer speed puntatore velocità"),
         ("printers", "Printers", "Stampanti", "#8E8E93", "printer-symbolic",
@@ -128,6 +130,9 @@ def tile(color, icon, size=26, px=16, big=False):
 
 
 def available(item):
+    if item[0] == "kbdlight":          # only on Macs with a backlit keyboard
+        import glob
+        return bool(glob.glob("/sys/class/leds/*kbd_backlight*"))
     return shutil.which(item[5][0]) is not None
 
 

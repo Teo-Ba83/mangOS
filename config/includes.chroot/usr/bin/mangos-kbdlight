@@ -1,0 +1,275 @@
+#!/usr/bin/python3
+"""MangOS keyboard backlight, like the Mac's (MacBook Pro, MacBook Air and
+aluminium MacBooks with a backlit keyboard; on other Macs it does nothing).
+
+usage: mangos-kbdlight                 run in the session (started at login):
+                                       turns the light off after a while without
+                                       typing, on again at the first key, and
+                                       follows the room's light (ambient sensor)
+       mangos-kbdlight status          'present level auto timeout' (or 'absent')
+       mangos-kbdlight set <0-100>     the user's level (Control Center slider)
+       mangos-kbdlight auto on|off     follow the room's light
+       mangos-kbdlight timeout <s>     seconds without typing before it turns off (0 = never)
+       mangos-kbdlight --settings      a small settings window
+
+The light is /sys/class/leds/*kbd_backlight (applesmc); it is changed through
+UPower's KbdBacklight D-Bus interface (allowed for the logged-in user), or the
+file directly when writable. The ambient light comes from the Apple SMC
+(/sys/devices/platform/applesmc.768/light). Settings: ~/.config/mangos/kbdlight.conf.
+F5/F6 (keyboard brightness keys) keep working through xfce4-power-manager; a
+level changed with them becomes the user's level.
+MANGOS_KBD_SYSFS / MANGOS_KBD_LIGHT point to stand-ins (used by the tests)."""
+import ctypes, ctypes.util, glob, json, os, re, sys, time
+
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos", "kbdlight.conf")
+DEFAULTS = {"level": 60, "auto": True, "timeout": 30}
+# ambient sensor (raw Apple SMC values): darker than DARK -> the user's level,
+# brighter than BRIGHT -> off, in between proportionally (like the Mac)
+DARK, BRIGHT = 8, 60
+
+
+def device():
+    base = os.environ.get("MANGOS_KBD_SYSFS")
+    if base:
+        return base if os.path.exists(os.path.join(base, "brightness")) else None
+    found = sorted(glob.glob("/sys/class/leds/*kbd_backlight*"))
+    return found[0] if found else None
+
+
+def read_int(path, default=0):
+    try:
+        return int(open(path).read().strip())
+    except (OSError, ValueError):
+        return default
+
+
+def load():
+    c = dict(DEFAULTS)
+    try:
+        c.update(json.load(open(CONF)))
+    except (OSError, ValueError):
+        pass
+    return c
+
+
+def save(c):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    tmp = CONF + ".tmp"
+    json.dump(c, open(tmp, "w"))
+    os.replace(tmp, CONF)
+
+
+class Light:
+    def __init__(self, dev):
+        self.dev = dev
+        self.max = max(1, read_int(os.path.join(dev, "max_brightness"), 255))
+        self.bus = None
+        if not os.environ.get("MANGOS_KBD_SYSFS"):
+            try:
+                import gi
+                from gi.repository import Gio
+                self.Gio = Gio
+                self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+                self.max = self.call("GetMaxBrightness") or self.max
+            except Exception:
+                self.bus = None
+
+    def call(self, method, *args):
+        from gi.repository import GLib
+        params = GLib.Variant("(i)", args) if args else None
+        r = self.bus.call_sync("org.freedesktop.UPower", "/org/freedesktop/UPower/KbdBacklight",
+                               "org.freedesktop.UPower.KbdBacklight", method, params, None,
+                               self.Gio.DBusCallFlags.NONE, 2000, None)
+        return r.unpack()[0] if r and r.n_children() else None
+
+    def get(self):
+        if self.bus:
+            try:
+                return self.call("GetBrightness")
+            except Exception:
+                pass
+        return read_int(os.path.join(self.dev, "brightness"))
+
+    def set(self, raw):
+        raw = max(0, min(self.max, int(round(raw))))
+        if self.bus:
+            try:
+                self.call("SetBrightness", raw)
+                return
+            except Exception:
+                pass
+        try:
+            with open(os.path.join(self.dev, "brightness"), "w") as f:
+                f.write(str(raw))
+        except OSError:
+            pass
+
+    def pct_to_raw(self, pct):
+        return self.max * pct / 100.0
+
+    def raw_to_pct(self, raw):
+        return round(100.0 * raw / self.max)
+
+
+def ambient():
+    """Raw ambient light from the Apple SMC, or None."""
+    path = os.environ.get("MANGOS_KBD_LIGHT", "/sys/devices/platform/applesmc.768/light")
+    try:
+        nums = [int(x) for x in re.findall(r"\d+", open(path).read())]
+    except OSError:
+        return None
+    return max(nums) if nums else None
+
+
+def idle_ms():
+    """Milliseconds since the last key or mouse event (X screensaver extension)."""
+    fake = os.environ.get("MANGOS_KBD_IDLE")
+    if fake:
+        try:
+            return int(open(fake).read())
+        except (OSError, ValueError):
+            return 0
+    global _xss
+    try:
+        _xss
+    except NameError:
+        _xss = None
+        try:
+            x11 = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11") or "libX11.so.6")
+            xss = ctypes.cdll.LoadLibrary(ctypes.util.find_library("Xss") or "libXss.so.1")
+
+            class Info(ctypes.Structure):
+                _fields_ = [("window", ctypes.c_ulong), ("state", ctypes.c_int), ("kind", ctypes.c_int),
+                            ("til_or_since", ctypes.c_ulong), ("idle", ctypes.c_ulong), ("eventMask", ctypes.c_ulong)]
+            x11.XOpenDisplay.restype = ctypes.c_void_p
+            x11.XDefaultRootWindow.restype = ctypes.c_ulong
+            x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+            xss.XScreenSaverAllocInfo.restype = ctypes.POINTER(Info)
+            xss.XScreenSaverQueryInfo.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(Info)]
+            dpy = x11.XOpenDisplay(None)
+            if dpy:
+                _xss = (x11, xss, dpy, x11.XDefaultRootWindow(dpy), xss.XScreenSaverAllocInfo())
+        except OSError:
+            _xss = None
+    if not _xss:
+        return 0
+    x11, xss, dpy, root, info = _xss
+    xss.XScreenSaverQueryInfo(dpy, root, info)
+    return info.contents.idle
+
+
+def target_pct(c, idle, amb):
+    """Level the light should have now (percent)."""
+    if c["timeout"] and idle >= c["timeout"] * 1000:
+        return 0
+    level = c["level"]
+    if c["auto"] and amb is not None:
+        if amb >= BRIGHT:
+            return 0
+        if amb > DARK:
+            level = level * (BRIGHT - amb) / (BRIGHT - DARK)
+    return round(level)
+
+
+def daemon(light):
+    c = load()
+    conf_mtime = os.path.getmtime(CONF) if os.path.exists(CONF) else 0
+    current = None          # what we last set (raw)
+    while True:
+        try:
+            m = os.path.getmtime(CONF)
+            if m != conf_mtime:
+                conf_mtime, c = m, load()
+        except OSError:
+            pass
+        now = light.get()
+        if current is not None and now is not None and abs(now - current) > 0.5 and now > 0:
+            # changed by someone else (F5/F6 through the power manager): the new user level
+            c["level"] = light.raw_to_pct(now)
+            save(c); conf_mtime = os.path.getmtime(CONF)
+            current = now
+        want = light.pct_to_raw(target_pct(c, idle_ms(), ambient()))
+        if current is None or abs(want - current) > 0.5:
+            # fade in a few steps, like the Mac
+            start = current if current is not None else (now or 0)
+            steps = 4 if want > start else 8
+            for i in range(1, steps + 1):
+                light.set(start + (want - start) * i / steps)
+                time.sleep(0.04)
+            current = light.get()
+            if current is None:
+                current = want
+        time.sleep(0.5 if idle_ms() < 2000 else 1.0)
+
+
+def settings_window(light):
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+    from mangos import tr, load_css
+    load_css()
+    c = load()
+    w = Gtk.Window(title=tr("Keyboard Backlight", "Retroilluminazione tastiera"))
+    w.set_default_size(420, -1); w.set_position(Gtk.WindowPosition.CENTER); w.set_resizable(False)
+    w.set_icon_name("input-keyboard")
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20); w.add(box)
+    box.pack_start(Gtk.Label(label=tr("Brightness", "Luminosità"), xalign=0), False, False, 0)
+    sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1); sc.set_value(c["level"])
+    sc.set_draw_value(False); box.pack_start(sc, False, False, 0)
+    auto = Gtk.CheckButton(label=tr("Adjust keyboard brightness in low light", "Regola la luminosità della tastiera in caso di poca luce"))
+    auto.set_active(c["auto"]); box.pack_start(auto, False, False, 0)
+    if ambient() is None:
+        auto.set_sensitive(False)
+        auto.set_tooltip_text(tr("This Mac has no ambient light sensor", "Questo Mac non ha il sensore di luce ambientale"))
+    row = Gtk.Box(spacing=8)
+    row.pack_start(Gtk.Label(label=tr("Turn keyboard backlight off after", "Spegni la retroilluminazione dopo")), False, False, 0)
+    combo = Gtk.ComboBoxText()
+    choices = [(5, "5 s"), (10, "10 s"), (30, "30 s"), (60, "1 min"), (300, "5 min"), (0, tr("Never", "Mai"))]
+    for v, l in choices:
+        combo.append(str(v), l)
+    combo.set_active_id(str(c["timeout"]) if any(v == c["timeout"] for v, _ in choices) else "30")
+    row.pack_start(combo, False, False, 0)
+    box.pack_start(row, False, False, 0)
+    hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=50, label=tr(
+        "F5 and F6 make the keyboard darker and brighter.", "F5 e F6 abbassano e alzano la luce della tastiera."))
+    hint.set_opacity(0.6); box.pack_start(hint, False, False, 0)
+
+    def changed(*_):
+        c["level"] = int(sc.get_value()); c["auto"] = auto.get_active(); c["timeout"] = int(combo.get_active_id())
+        save(c)
+        light.set(light.pct_to_raw(c["level"]))
+    sc.connect("value-changed", changed); auto.connect("toggled", changed); combo.connect("changed", changed)
+    w.connect("destroy", Gtk.main_quit); w.show_all(); Gtk.main()
+
+
+def main():
+    args = sys.argv[1:]
+    dev = device()
+    if not dev:
+        if args[:1] == ["status"]:
+            print("absent")
+        elif args[:1] == ["--settings"]:
+            print("this Mac has no keyboard backlight")
+        return 0                       # no backlit keyboard: nothing to do
+    light = Light(dev)
+    c = load()
+    if not args:
+        daemon(light)
+    elif args[0] == "status":
+        print(f"present {c['level']} {'on' if c['auto'] else 'off'} {c['timeout']}")
+    elif args[0] == "set" and len(args) > 1:
+        c["level"] = max(0, min(100, int(float(args[1])))); save(c)
+        light.set(light.pct_to_raw(c["level"]))
+    elif args[0] == "auto" and len(args) > 1:
+        c["auto"] = args[1] == "on"; save(c)
+    elif args[0] == "timeout" and len(args) > 1:
+        c["timeout"] = max(0, int(args[1])); save(c)
+    elif args[0] == "--settings":
+        settings_window(light)
+    else:
+        print(__doc__); return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
