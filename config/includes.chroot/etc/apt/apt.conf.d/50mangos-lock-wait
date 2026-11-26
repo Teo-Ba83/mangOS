@@ -1,0 +1,4 @@
+// MangOS: when another installation is running (the Mango Store, Software
+// Update, unattended upgrades), wait for it to finish (up to 10 minutes)
+// instead of failing at once with "Could not get lock".
+DPkg::Lock::Timeout "600";

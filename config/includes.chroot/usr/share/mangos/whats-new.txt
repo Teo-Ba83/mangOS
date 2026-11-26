@@ -6,6 +6,10 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-26 00:10
+en: Software Update no longer gives up while the Mango Store is installing an app: it waits for it to finish and says so.
+it: Aggiornamento software non si arrende più se il Mango Store sta installando un'app: aspetta che finisca e lo dice.
+
 ## 2026-11-25 23:52
 en: New Mango Finder (beta, Launchpad): browse files like the Mac's Finder, Icons and List views, sort, search, Quick Look. Read-only for now: Thunar stays the file manager.
 it: Nuovo Mango Finder (beta, Launchpad): sfoglia i file come il Finder del Mac, viste Icone ed Elenco, ordinamento, ricerca, Anteprima rapida. Per ora solo lettura: Thunar resta il gestore dei file.

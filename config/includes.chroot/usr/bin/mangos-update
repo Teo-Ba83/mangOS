@@ -158,6 +158,20 @@ class Update(Gtk.Box):
             done(r)
             return False
         threading.Thread(target=work, daemon=True).start()
+        GLib.timeout_add_seconds(3, self.watch_lock)
+
+    def watch_lock(self):
+        """While busy: say so if another installation holds the package system."""
+        if not self.busy:
+            return False
+        try:
+            log = open("/run/mangos-update.log", errors="replace").read()[-4000:]
+        except OSError:
+            return True
+        if "Could not get lock" in log or "Waiting for cache lock" in log:
+            self.result.set_text(tr("Another installation is running (Mango Store?): waiting for it to finish…",
+                                    "Un'altra installazione è in corso (Mango Store?): attendo che finisca…"))
+        return True
 
     def root(self, args, label, done):
         self.run(["pkexec", UPDATER] + args, label, done)
@@ -181,6 +195,9 @@ class Update(Gtk.Box):
                        "MangOS è stato aggiornato: riavvia per vedere tutte le novità.")
             elif "mangos=current" in st:
                 a = tr("MangOS is up to date.", "MangOS è aggiornato.")
+            elif "mangos=failed" in st:
+                a = tr("The MangOS update did not finish: try again in a few minutes.",
+                       "L'aggiornamento di MangOS non è riuscito: riprova tra qualche minuto.")
             elif "mangos=refused" in st:
                 a = tr("A MangOS update was REFUSED: its signature is not valid.",
                        "Un aggiornamento di MangOS è stato RIFIUTATO: la firma non è valida.")
