@@ -65,9 +65,6 @@ XS
 # Services: Mac keyboard, MacBook fans, MangOS updates; no slow boot waits.
 systemctl enable keyd.service mbpfan.service mangos-updater.timer mangos-backup.timer mangos-flathub.timer >/dev/null 2>&1 || true
 systemctl disable NetworkManager-wait-online.service >/dev/null 2>&1 || true
-# wsdd is only for Mango Finder's Network (finding Windows computers through
-# GVFS); this Mac does not announce itself as a Windows file server.
-systemctl disable wsdd.service >/dev/null 2>&1 || true
 
 # Automatic security updates from Debian
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AU'

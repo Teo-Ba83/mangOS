@@ -264,7 +264,8 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   Drives). Eject with the button in the sidebar or Ctrl+E. A phone must be
   unlocked and set to "File transfer" for its files to appear.
 - Network: computers sharing files (Windows, Mac, NAS) appear under Network
-  when they announce themselves (Avahi / WS-Discovery); otherwise use
+  when they announce themselves (Avahi, Windows network browsing; recent
+  Windows versions often do not, wsdd is not in Debian 13); otherwise use
   Connect to Server (Ctrl+K), e.g. smb://nas.local/Documenti. Passwords can
   be remembered in the keyring.
 - Enter opens (like most Linux file managers), F2 renames (the Mac uses
