@@ -122,6 +122,7 @@ xfce4-taskmanager
 gvfs
 gvfs-backends
 gvfs-fuse
+wsdd
 udisks2
 upower
 engrampa

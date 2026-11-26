@@ -1,12 +1,27 @@
 [Desktop Entry]
 Type=Application
-Name=Mango Finder (beta)
-Name[it]=Mango Finder (beta)
-Comment=Your files like the Mac's Finder: icons, list, columns, gallery, copy, move, Trash (beta)
-Comment[it]=I tuoi file come il Finder del Mac: icone, elenco, colonne, galleria, copia, sposta, Cestino (beta)
+Name=Mango Finder
+Name[it]=Mango Finder
+GenericName=File Manager
+GenericName[it]=Gestore dei file
+Comment=Your files, drives and network places, like the Mac's Finder
+Comment[it]=I tuoi file, i dischi e la rete, come il Finder del Mac
 Exec=mangos-finder %U
 Icon=system-file-manager
 Terminal=false
 Categories=System;FileTools;FileManager;X-MangOS-Launchpad;
-Keywords=finder;files;folders;browse;file;cartelle;sfoglia;
+MimeType=inode/directory;x-scheme-handler/trash;
+Keywords=finder;files;folders;browse;file;cartelle;sfoglia;usb;drive;network;rete;
 StartupNotify=true
+StartupWMClass=Mangos-finder
+Actions=new-window;connect;
+
+[Desktop Action new-window]
+Name=New Window
+Name[it]=Nuova finestra
+Exec=mangos-finder
+
+[Desktop Action connect]
+Name=Connect to Server…
+Name[it]=Connetti al server…
+Exec=mangos-finder --connect

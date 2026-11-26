@@ -81,7 +81,7 @@ GROUPS = [
         ("printers", "Printers", "Stampanti", "#8E8E93", "printer-symbolic",
          ["system-config-printer"], False, "printer print stampante"),
         ("drives", "Removable Drives", "Unità rimovibili", "#8E8E93", "media-removable-symbolic",
-         ["thunar-volman-settings"], True, "usb drives media removable unità chiavetta"),
+         ["mangos-finder", "--preferences"], False, "usb drives media removable unità chiavetta automatic apri automaticamente"),
     ],
     [
         ("tweaks", "Window Tweaks", "Finestre: avanzate", "#636366", "emblem-system-symbolic",

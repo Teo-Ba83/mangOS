@@ -41,6 +41,12 @@ done
 fc-cache -f >/dev/null 2>&1 || true
 update-desktop-database -q /usr/share/applications 2>/dev/null || true
 
+# Mango Finder is the file manager (Xfce's "preferred applications" too)
+if [ -f /etc/xdg/xfce4/helpers.rc ]; then
+  sed -i 's/^FileManager=.*/FileManager=mangos-finder/' /etc/xdg/xfce4/helpers.rc
+  grep -q '^FileManager=' /etc/xdg/xfce4/helpers.rc || echo FileManager=mangos-finder >> /etc/xdg/xfce4/helpers.rc
+fi
+
 update-alternatives --set x-session-manager /usr/bin/xfce4-session >/dev/null 2>&1 || true
 update-alternatives --set x-www-browser /usr/bin/firefox-esr >/dev/null 2>&1 || true
 update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper >/dev/null 2>&1 || true
@@ -59,6 +65,9 @@ XS
 # Services: Mac keyboard, MacBook fans, MangOS updates; no slow boot waits.
 systemctl enable keyd.service mbpfan.service mangos-updater.timer mangos-backup.timer mangos-flathub.timer >/dev/null 2>&1 || true
 systemctl disable NetworkManager-wait-online.service >/dev/null 2>&1 || true
+# wsdd is only for Mango Finder's Network (finding Windows computers through
+# GVFS); this Mac does not announce itself as a Windows file server.
+systemctl disable wsdd.service >/dev/null 2>&1 || true
 
 # Automatic security updates from Debian
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AU'
@@ -96,7 +105,8 @@ for f in xfce4-about debian-xterm debian-uxterm display-im6.q16 im-config ibus-s
          xfce4-run org.xfce.xfce4-appfinder xfce4-session-logout lightdm-gtk-greeter-settings \
          rofi rofi-theme-selector blueman-adapters vim plank xfce4-mail-reader xfce4-web-browser \
          xfce4-file-manager xfce4-terminal-emulator calamares-install-debian thunar-bulk-rename \
-         thunar-settings xfce4-settings-editor org.xfce.mousepad-settings timeshift-gtk; do
+         thunar-settings xfce4-settings-editor org.xfce.mousepad-settings timeshift-gtk thunar \
+         thunar-volman-settings; do
   d=/usr/share/applications/$f.desktop
   if [ -f "$d" ]; then
     sed -i '/^NoDisplay=/d; 0,/^\[Desktop Entry\]$/s//[Desktop Entry]\nNoDisplay=true/' "$d"
@@ -119,7 +129,7 @@ dock() {
   printf '[PlankDockItemPreferences]\nLauncher=file://%s/%s.desktop\n' "$APPS" "$2" > "$L/$1.dockitem"
 }
 dock mangos-launchpad      mangos-launchpad
-dock thunar                thunar
+dock thunar                mangos-finder   # same item name: dock order kept
 dock firefox-esr           firefox-esr
 dock vlc                   vlc
 dock mangos-store          mangos-store
@@ -143,6 +153,9 @@ for t in video/mp4 video/x-matroska video/webm video/quicktime audio/mpeg audio/
   mime="${mime}$t=vlc.desktop;\n"; done
 for t in text/html x-scheme-handler/http x-scheme-handler/https; do
   mime="${mime}$t=firefox-esr.desktop;\n"; done
+# folders open in Mango Finder (also from other apps: "Show in folder", downloads)
+for t in inode/directory x-scheme-handler/trash; do
+  mime="${mime}$t=mangos-finder.desktop;\n"; done
 printf "[Default Applications]\n$mime" > /etc/xdg/mimeapps.list
 
 # ------------------------------------------- Broadcom Wi-Fi (keep the choice)

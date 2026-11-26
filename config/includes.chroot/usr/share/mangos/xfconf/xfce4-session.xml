@@ -7,4 +7,14 @@
   <property name="compat" type="empty">
     <property name="LaunchGNOME" type="bool" value="false"/>
   </property>
+  <!-- Mango Finder runs in the background instead of Thunar's daemon: it opens
+       USB sticks when connected and does the desktop's file operations. -->
+  <property name="sessions" type="empty">
+    <property name="Failsafe" type="empty">
+      <property name="Client3_Command" type="array">
+        <value type="string" value="mangos-finder"/>
+        <value type="string" value="--daemon"/>
+      </property>
+    </property>
+  </property>
 </channel>

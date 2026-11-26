@@ -244,18 +244,32 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   processor (LIBGL_ALWAYS_SOFTWARE=1), and that is remembered. Its output is
   in ~/.cache/mangos/localsend_app.log. Not yet confirmed on the Mac.
 
-## Mango Finder (beta)
+## Mango Finder
 
-- A separate app (Launchpad: Mango Finder (beta)); Thunar stays the file
-  manager for the Dock, the desktop and "Open folder" until Mango Finder is
-  complete. Views: Icons, List, Columns, Gallery (Ctrl+1..4).
-- File operations (stage 3): copy / cut / paste (also from Thunar), drag and
-  drop (same disk moves, another disk or Ctrl copies), Move to Trash, Rename,
-  New Folder, Duplicate, Undo, Put Back, Empty Trash. Deleting always goes to
-  the Trash; files are destroyed only by Empty Trash / Delete Immediately (in
-  the Trash, after a confirmation) or on a disk without Trash after asking.
-- Enter opens (like Thunar), F2 renames (the Mac uses Return to rename).
-- Coming next (stage 4): Get Info, tags, eject buttons for drives.
+- Mango Finder is the file manager: Dock, folders on the desktop, "Show in
+  folder" from other apps and the desktop's copy / move / Trash go through
+  it. It runs in the background from login (`mangos-finder --daemon`).
+  Thunar is still installed in this build, hidden, as a safety net; it is
+  removed in the next build once Mango Finder has been tried on the Mac.
+- Views: Icons, List, Columns, Gallery (Ctrl+1..4). File operations: copy /
+  cut / paste (also with the desktop and other file managers), drag and
+  drop (same disk moves, another disk or Ctrl copies), Move to Trash,
+  Rename, New Folder, New Document (Templates folder: Modelli), Duplicate,
+  Make Alias, Compress (.zip), Extract Here (Engrampa), Undo, Put Back,
+  Empty Trash. Deleting always goes to the Trash; files are destroyed only by
+  Empty Trash / Delete Immediately (after a confirmation) or on a disk
+  without Trash after asking.
+- USB sticks, disks, phones (MTP) and cameras open by themselves when
+  connected, with a window (Settings: Ctrl+, or System Settings > Removable
+  Drives). Eject with the button in the sidebar or Ctrl+E. A phone must be
+  unlocked and set to "File transfer" for its files to appear.
+- Network: computers sharing files (Windows, Mac, NAS) appear under Network
+  when they announce themselves (Avahi / WS-Discovery); otherwise use
+  Connect to Server (Ctrl+K), e.g. smb://nas.local/Documenti. Passwords can
+  be remembered in the keyring.
+- Enter opens (like most Linux file managers), F2 renames (the Mac uses
+  Return to rename).
+- Not yet: colour tags, Spotlight-style search across the whole disk, tabs.
 - Large folders: 3,000 files take about 1.6 s on a modern PC; expect several
   seconds on a 2008 Core 2 Duo (the count is shown while loading).
 

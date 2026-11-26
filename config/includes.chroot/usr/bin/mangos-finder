@@ -1,11 +1,17 @@
 #!/usr/bin/python3
-"""Mango Finder (beta): a file browser laid out like the Mac's Finder.
+"""Mango Finder: the MangOS file manager, laid out like the Mac's Finder.
 
-usage: mangos-finder [FOLDER or URI]
+usage: mangos-finder [FOLDER or URI]     open a window
+       mangos-finder --daemon            in the background (started at login)
+       mangos-finder --preferences       Mango Finder Settings
+       mangos-finder --connect           Connect to Server
+       mangos-finder --select FILE       open its folder with it selected
+       mangos-finder --info FILE         Get Info
 
-Stages 1-3:
   - sidebar: Favourites (Recents, Desktop, Documents, Downloads, Pictures,
-    Music, Videos, Home), Locations (drives and USB sticks, Trash)
+    Music, Videos, Home), Locations (drives, USB sticks, phones, cameras,
+    with an Eject button; Computer, Trash), Network (Network browsing,
+    connected servers, Connect to Server)
   - views (Ctrl+1..4 like Cmd+1..4): Icons (thumbnails for photos, videos,
     PDFs through Tumbler); List (folders open in place with a triangle;
     Name, Date Modified, Size, Kind); Columns (each folder opens in a new
@@ -14,17 +20,30 @@ Stages 1-3:
   - sort by name, date, size or kind, ascending or descending, folders first
   - search in the folder, show hidden files (Ctrl+Shift+.)
   - back / forward (Ctrl+[ / Ctrl+]), enclosing folder (Ctrl+Up), open
-    (double click, Enter, Ctrl+Down), Quick Look (Space), Open in Thunar,
-    Copy Path, path bar at the bottom
+    (double click, Enter, Ctrl+Down), Quick Look (Space), Copy Path,
+    path bar at the bottom, new window (Ctrl+N), Home / Desktop / Documents
+    (Ctrl+Shift+H / D / O), Network (Ctrl+Shift+K)
   - copy / cut / paste (Ctrl+C / X / V; Ctrl+Alt+V moves, like Cmd+Option+V),
     drag and drop (same disk: move, another disk or Ctrl: copy), Move to
     Trash (Delete or Ctrl+Backspace), Rename (F2), New Folder (Ctrl+Shift+N),
-    Duplicate (Ctrl+D), Undo (Ctrl+Z); in the Trash: Put Back, Delete
+    New Document (empty, or from the Templates folder), Duplicate (Ctrl+D),
+    Make Alias (Ctrl+L), Show Original (Ctrl+R), Compress (.zip, like the
+    Mac), Extract Here, Undo (Ctrl+Z); in the Trash: Put Back, Delete
     Immediately, Empty Trash; progress bar with Stop; asks before replacing
     (mangos.fileops does the work and has its own tests)
-Files go through GIO/GVFS (the same layer Thunar uses), so drives, Trash
-and network places work the same. Thunar stays the default file manager
-until Mango Finder is complete."""
+  - Open With (the default app, the others, Other... with "always"), Get
+    Info (Ctrl+I: kind, size, where, dates, Open With for all such files,
+    permissions, a drive's capacity), Open in Terminal
+  - drives: USB sticks, disks, phones and cameras open by themselves when
+    connected and show a window (Settings: Ctrl+,); Eject (Ctrl+E)
+  - network: Windows, Mac and NAS shares found on the network, Connect to
+    Server (Ctrl+K: smb://, sftp://, ftp://, dav(s)://) with recent servers
+  - for the desktop and the other apps it is the file manager (D-Bus
+    org.freedesktop.FileManager1, org.xfce.FileManager, org.xfce.Trash):
+    folders on the desktop, "Show in folder", the desktop's copy / move /
+    Trash / rename go through it
+Files go through GIO/GVFS, so drives, the Trash and network places behave
+the same everywhere."""
 import functools, json, os, subprocess, sys, threading, time, urllib.parse
 import gi
 gi.require_version("Gtk", "3.0")
@@ -45,6 +64,8 @@ CSS = b"""
 .fd-side list { background: transparent; }
 .fd-side row { padding: 4px 10px; border-radius: 7px; margin: 0 8px; }
 .fd-side row.fd-current { background: alpha(currentColor, .14); color: @theme_fg_color; }
+.fd-eject { padding: 0 2px; min-height: 16px; min-width: 16px; opacity: .55; }
+.fd-eject:hover { opacity: 1; }
 .fd-side-head { font-size: 11px; font-weight: 700; opacity: .5; margin: 12px 18px 3px 18px; }
 .fd-status { font-size: 11px; opacity: .65; padding: 3px 10px; border-top: 1px solid alpha(currentColor, .1); }
 .fd-path button { padding: 0 4px; min-height: 18px; font-size: 11px; border: none; box-shadow: none; background: transparent; }
@@ -87,8 +108,13 @@ def nice_date(ts):
     return time.strftime("%d %b %Y, %H:%M", d)
 
 
+WINDOW_KEYS = ("view", "sort", "desc", "hidden", "w", "h", "servers")
+PREF_KEYS = ("automount", "autoopen", "new_window")
+
+
 def load_cfg():
-    c = {"view": "icons", "sort": "name", "desc": False, "hidden": False, "w": 980, "h": 600}
+    c = {"view": "icons", "sort": "name", "desc": False, "hidden": False, "w": 980, "h": 600,
+         "automount": True, "autoopen": True, "new_window": "home"}
     try:
         c.update(json.load(open(CFG)))
     except (OSError, ValueError):
@@ -96,12 +122,64 @@ def load_cfg():
     return c
 
 
-def save_cfg(c):
+def save_cfg(c, keys=WINDOW_KEYS):
+    """Saves only these keys (windows and Preferences share the file)."""
     try:
+        fresh = load_cfg()
+        fresh.update({k: c[k] for k in keys if k in c})
         os.makedirs(os.path.dirname(CFG), exist_ok=True)
-        json.dump(c, open(CFG, "w"))
+        tmp = CFG + ".tmp"
+        json.dump(fresh, open(tmp, "w"))
+        os.replace(tmp, CFG)
     except OSError:
         pass
+
+
+# The clipboard with files, the way the desktop and other file managers read
+# it (x-special/gnome-copied-files, text/uri-list) and as text for the other
+# apps. PyGObject cannot offer several clipboard formats, so GTK is called
+# directly (gtk_clipboard_set_with_data).
+_clip_keep = []
+
+
+def set_file_clipboard(mode, uris, text):
+    import ctypes
+    try:
+        gtk = ctypes.CDLL("libgtk-3.so.0")
+    except OSError:
+        return False
+
+    class Target(ctypes.Structure):
+        _fields_ = [("target", ctypes.c_char_p), ("flags", ctypes.c_uint), ("info", ctypes.c_uint)]
+    GET = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p)
+    CLEAR = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+    gtk.gtk_clipboard_get.restype = ctypes.c_void_p
+    gtk.gtk_clipboard_get.argtypes = [ctypes.c_void_p]
+    gtk.gdk_atom_intern.restype = ctypes.c_void_p
+    gtk.gdk_atom_intern.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    gtk.gtk_clipboard_set_with_data.restype = ctypes.c_int
+    gtk.gtk_clipboard_set_with_data.argtypes = [ctypes.c_void_p, ctypes.POINTER(Target), ctypes.c_uint, GET, CLEAR, ctypes.c_void_p]
+    gtk.gtk_selection_data_get_target.restype = ctypes.c_void_p
+    gtk.gtk_selection_data_get_target.argtypes = [ctypes.c_void_p]
+    gtk.gtk_selection_data_set.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    gtk.gtk_selection_data_set_text.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    data = {0: (mode + "\n" + "\n".join(uris)).encode(), 1: ("\r\n".join(uris) + "\r\n").encode(), 2: text.encode()}
+    names = [(b"x-special/gnome-copied-files", 0), (b"text/uri-list", 1), (b"UTF8_STRING", 2),
+             (b"text/plain;charset=utf-8", 2), (b"text/plain", 2), (b"STRING", 2), (b"TEXT", 2)]
+    targets = (Target * len(names))(*[Target(n, 0, i) for n, i in names])
+
+    def get(_cb, sd, info, _ud):
+        if info == 2:
+            gtk.gtk_selection_data_set_text(sd, data[2], len(data[2]))
+        else:
+            gtk.gtk_selection_data_set(sd, gtk.gtk_selection_data_get_target(sd), 8, data[info], len(data[info]))
+
+    def clear(_cb, _ud):
+        pass
+    cbs = (GET(get), CLEAR(clear), targets)
+    _clip_keep[:] = [cbs]                       # GTK keeps calling them until something else is copied
+    clip = gtk.gtk_clipboard_get(gtk.gdk_atom_intern(b"CLIPBOARD", 0))
+    return bool(gtk.gtk_clipboard_set_with_data(clip, targets, len(names), cbs[0], cbs[1], None))
 
 
 class Thumbnails:
@@ -134,7 +212,203 @@ class Thumbnails:
             self.ready_cb(params.unpack()[1])
 
 
-class Finder(Gtk.ApplicationWindow):
+class Jobs:
+    """File jobs with their dialogs and progress bar: shared by the Finder
+    windows and by the helper that does what the desktop asks (D-Bus)."""
+    reselect = set()
+
+    def in_trash(self):
+        return False
+
+    def reload_keep(self):
+        return False
+
+    def build_progress(self):
+        self.jobs = []
+        self.prog_rev = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_UP)
+        pb = Gtk.Box(spacing=10, margin=8); pb.get_style_context().add_class("fd-progress")
+        self.prog_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
+        self.prog_bar = Gtk.ProgressBar(valign=Gtk.Align.CENTER)
+        stop = Gtk.Button.new_from_icon_name("process-stop-symbolic", Gtk.IconSize.BUTTON)
+        stop.set_tooltip_text(tr("Stop", "Interrompi")); stop.connect("clicked", lambda *_: self.stop_jobs())
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        col.pack_start(self.prog_label, False, False, 0); col.pack_start(self.prog_bar, False, False, 0)
+        pb.pack_start(col, True, True, 0); pb.pack_end(stop, False, False, 0)
+        self.prog_rev.add(pb)
+        return self.prog_rev
+
+    def after_job(self, job, errs):
+        pass
+
+    def display_name(self, f):
+        try:
+            return f.query_info("standard::display-name", Gio.FileQueryInfoFlags.NONE, None).get_display_name()
+        except GLib.Error:
+            return f.get_basename() or f.get_uri()
+
+    def message(self, text):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.OK, text=text)
+        d.run(); d.destroy()
+
+    def run_job(self, kind, files, dest=None, label=None, **kw):
+        if self.in_trash() and kind in ("copy", "move", "new_folder", "duplicate") and dest is not None and dest.get_uri_scheme() == "trash":
+            if kind == "move":
+                kind, dest = "trash", None          # dropping into the Trash = Move to Trash
+            else:
+                return
+        job = fileops.Job(kind, files, dest, copy_word=tr("copy", "copia"),
+                          folder_word=tr("untitled folder", "Nuova cartella"), **kw)
+        job.progress = lambda d, t, n: GLib.idle_add(self.on_progress, job, d, t, n)
+        job.conflict_cb = lambda src, dst: self.ask_main(self.ask_conflict, src, dst)
+        job.confirm = lambda what, fs: self.ask_main(self.ask_confirm, what, fs)
+        job.label = label or self.job_label(kind, files, dest)
+        job.started = time.monotonic()
+        self.jobs.append(job)
+
+        def work():
+            job.run()
+            GLib.idle_add(self.job_done, job)
+        threading.Thread(target=work, daemon=True).start()
+        GLib.timeout_add(500, self.maybe_show_progress, job)
+        return job
+
+    def job_label(self, kind, files, dest):
+        n = len(files)
+        what = files[0].get_basename() if n == 1 else tr(f"{n} items", f"{n} elementi")
+        where = self.display_name(dest) if dest else ""
+        return {"copy": tr(f"Copying {what} to “{where}”", f"Copia di {what} in “{where}”"),
+                "move": tr(f"Moving {what} to “{where}”", f"Spostamento di {what} in “{where}”"),
+                "trash": tr(f"Moving {what} to the Trash", f"Spostamento di {what} nel Cestino"),
+                "delete": tr(f"Deleting {what}", f"Eliminazione di {what}"),
+                "empty_trash": tr("Emptying the Trash", "Svuotamento del Cestino"),
+                "duplicate": tr(f"Duplicating {what}", f"Duplicazione di {what}"),
+                "restore": tr(f"Putting back {what}", f"Ripristino di {what}"),
+                "compress": tr(f"Compressing {what}", f"Compressione di {what}"),
+                "copy_to": tr(f"Copying {what}", f"Copia di {what}"),
+                "link": tr(f"Making an alias of {what}", f"Creazione alias di {what}")}.get(kind, "")
+
+    def ask_main(self, fn, *args):
+        """Runs a dialog on the main thread and waits for the answer (called from a job's thread)."""
+        box, ev = {}, threading.Event()
+
+        def run():
+            box["r"] = fn(*args); ev.set()
+            return False
+        GLib.idle_add(run)
+        ev.wait()
+        return box["r"]
+
+    def ask_conflict(self, src, dst):
+        folder = fileops.is_dir(dst)
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                              buttons=Gtk.ButtonsType.NONE,
+                              text=tr(f"An item named “{dst.get_basename()}” already exists in this location.",
+                                      f"In questa posizione esiste già un elemento chiamato “{dst.get_basename()}”."))
+        d.format_secondary_text(tr("Do you want to replace it with the one you are copying?",
+                                   "Vuoi sostituirlo con quello che stai copiando?") if not folder else
+                                tr("Merging adds the items of the folder you are copying; nothing is deleted.",
+                                   "Unire aggiunge gli elementi della cartella che stai copiando; non viene eliminato niente."))
+        d.add_buttons(tr("Stop", "Interrompi"), 1, tr("Skip", "Salta"), 2, tr("Keep Both", "Mantieni entrambi"), 3,
+                      tr("Merge", "Unisci") if folder else tr("Replace", "Sostituisci"), 4)
+        allc = Gtk.CheckButton(label=tr("Apply to all", "Applica a tutti"), margin_start=12)
+        d.get_message_area().pack_start(allc, False, False, 0); allc.show()
+        d.set_default_response(3)
+        r = d.run(); a = allc.get_active(); d.destroy()
+        return ({1: "cancel", 2: "skip", 3: "keep", 4: "replace"}.get(r, "cancel"), a)
+
+    def ask_confirm(self, what, files):
+        if what == "no-trash":
+            n = len(files)
+            return self.yes_no(tr(f"“{files[0].get_basename()}” cannot be moved to the Trash." if n == 1 else
+                                  f"{n} items cannot be moved to the Trash.",
+                                  f"“{files[0].get_basename()}” non può andare nel Cestino." if n == 1 else
+                                  f"{n} elementi non possono andare nel Cestino."),
+                               tr("This disk has no Trash. Delete immediately? You cannot undo this.",
+                                  "Questo disco non ha un Cestino. Eliminare subito? Non si potrà annullare."),
+                               tr("Delete", "Elimina"))
+        return False
+
+    def yes_no(self, text, sub, ok_label):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                              buttons=Gtk.ButtonsType.NONE, text=text)
+        d.format_secondary_text(sub)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, ok_label, Gtk.ResponseType.OK)
+        d.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("destructive-action")
+        d.set_default_response(Gtk.ResponseType.CANCEL)
+        r = d.run(); d.destroy()
+        return r == Gtk.ResponseType.OK
+
+    def maybe_show_progress(self, job):
+        if job in self.jobs:                       # still running after half a second: show the bar
+            self.prog_rev.set_reveal_child(True)
+        return False
+
+    def on_progress(self, job, done, total, name):
+        if not self.jobs or job is not self.jobs[-1]:
+            return False
+        frac = done / total if total else 0
+        self.prog_bar.set_fraction(min(1, frac))
+        left = ""
+        el = time.monotonic() - job.started
+        if frac > 0.02 and el > 2:
+            secs = int(el / frac - el)
+            left = (tr(f" — about {secs} s left", f" — circa {secs} s") if secs < 90 else
+                    tr(f" — about {secs // 60} min left", f" — circa {secs // 60} min"))
+        self.prog_label.set_text(f"{job.label}  {int(frac * 100)}%{left}")
+        return False
+
+    def stop_jobs(self):
+        for j in list(self.jobs):
+            j.cancel()
+
+    def job_done(self, job):
+        if job in self.jobs:
+            self.jobs.remove(job)
+        if not self.jobs:
+            self.prog_rev.set_reveal_child(False)
+        if job.undo:
+            self.get_application().undo_stack.append((job.label, job.undo))
+        self.reselect |= {f.get_uri() for f in job.created}
+        errs = [e for e in job.errors if e != "cancelled"]
+        if errs:
+            self.message(tr("The operation could not be completed:\n", "L'operazione non è stata completata:\n") +
+                         "\n".join(errs[:5]))
+        self.after_job(job, errs)
+        self.reload_keep()
+        return False
+
+    def rename_dialog(self, f=None):
+        if f is None:
+            sel = self.selected()
+            if len(sel) != 1 or self.in_trash():
+                return False
+            f = sel[0][0]
+        old = f.get_basename()
+        d = Gtk.Dialog(title=tr("Rename", "Rinomina"), transient_for=self, modal=True)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, tr("Rename", "Rinomina"), Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        e = Gtk.Entry(text=old, activates_default=True, width_chars=36, margin=14)
+        d.get_content_area().add(e); d.show_all()
+        base, ext = fileops.split_ext(old)
+        e.select_region(0, len(base) if not fileops.is_dir(f) else -1)   # name without the extension, like the Mac
+        while d.run() == Gtk.ResponseType.OK:
+            new = e.get_text().strip()
+            if new == old or not new:
+                break
+            job = fileops.Job("rename", [f], new_name=new).run()
+            if job.errors:
+                self.message(tr("Cannot rename: ", "Impossibile rinominare: ") + job.errors[0])
+                continue
+            self.get_application().undo_stack.append((tr("Rename", "Rinomina"), job.undo))
+            self.reselect |= {c.get_uri() for c in job.created}
+            self.reload_keep()
+            break
+        d.destroy()
+        return False
+
+
+class Finder(Jobs, Gtk.ApplicationWindow):
     def __init__(self, app, start):
         super().__init__(application=app, title="Mango Finder")
         self.cfg = load_cfg()
@@ -253,18 +527,7 @@ class Finder(Gtk.ApplicationWindow):
         for c in self.trash_bar.get_children():
             c.show()
         # copy / move progress
-        self.prog_rev = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_UP)
-        pb = Gtk.Box(spacing=10, margin=8); pb.get_style_context().add_class("fd-progress")
-        self.prog_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
-        self.prog_bar = Gtk.ProgressBar(valign=Gtk.Align.CENTER)
-        stop = Gtk.Button.new_from_icon_name("process-stop-symbolic", Gtk.IconSize.BUTTON)
-        stop.set_tooltip_text(tr("Stop", "Interrompi")); stop.connect("clicked", lambda *_: self.stop_jobs())
-        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        col.pack_start(self.prog_label, False, False, 0); col.pack_start(self.prog_bar, False, False, 0)
-        pb.pack_start(col, True, True, 0); pb.pack_end(stop, False, False, 0)
-        self.prog_rev.add(pb)
-        right.pack_start(self.prog_rev, False, False, 0)
-        self.jobs = []
+        right.pack_start(self.build_progress(), False, False, 0)
 
         self.pathbar = Gtk.Box(spacing=0); self.pathbar.get_style_context().add_class("fd-path")
         right.pack_start(self.pathbar, False, False, 0)
@@ -316,17 +579,33 @@ class Finder(Gtk.ApplicationWindow):
                 fav.append((os.path.basename(p), GLib.filename_to_uri(p), icon))
         fav.append((GLib.get_user_name(), GLib.filename_to_uri(GLib.get_home_dir()), "user-home-symbolic"))
         self.side_section(tr("Favourites", "Preferiti"), fav)
-        loc = []
+        loc, net = [], []
         for m in self.volumes.get_mounts():
             if m.is_shadowed():
                 continue
-            loc.append((m.get_name(), m.get_root().get_uri(), "drive-removable-media-symbolic" if m.can_eject() else "drive-harddisk-symbolic"))
+            root = m.get_root()
+            ejectable = m.can_eject() or m.can_unmount()
+            if root.get_uri_scheme() not in ("file",) and not root.is_native():
+                # a network share (smb, sftp, ftp, webdav), a phone (mtp) or a camera (gphoto2)
+                scheme = root.get_uri_scheme()
+                icon = {"mtp": "phone-symbolic", "gphoto2": "camera-photo-symbolic", "afc": "phone-symbolic",
+                        "archive": "package-x-generic-symbolic"}.get(scheme, "folder-remote-symbolic")
+                (loc if scheme in ("mtp", "gphoto2", "afc", "archive") else net).append((m.get_name(), root.get_uri(), icon, m))
+                continue
+            loc.append((m.get_name(), root.get_uri(), "drive-removable-media-symbolic" if m.can_eject()
+                        else "drive-harddisk-symbolic", m if ejectable else None))
         for v in self.volumes.get_volumes():
             if v.get_mount() is None and v.can_mount():
-                loc.append((v.get_name(), ("volume", v), "drive-removable-media-symbolic"))
-        loc.append((tr("Computer", "Computer"), "file:///", "computer-symbolic"))
-        loc.append((tr("Trash", "Cestino"), "trash:///", "user-trash-symbolic"))
+                d = v.get_drive()
+                loc.append((v.get_name(), ("volume", v),
+                            "drive-removable-media-symbolic" if d and d.is_removable() else "drive-harddisk-symbolic",
+                            v if v.can_eject() else None))
+        loc.append((tr("Computer", "Computer"), "file:///", "computer-symbolic", None))
+        loc.append((tr("Trash", "Cestino"), "trash:///", "user-trash-symbolic", None))
         self.side_section(tr("Locations", "Posizioni"), loc)
+        net.insert(0, (tr("Network", "Rete"), "network:///", "network-workgroup-symbolic", None))
+        net.append((tr("Connect to Server…", "Connetti al server…"), ("connect",), "list-add-symbolic", None))
+        self.side_section(tr("Network", "Rete"), net)
         self.side.show_all()
         if self.folder:
             self.mark_sidebar()
@@ -336,7 +615,7 @@ class Finder(Gtk.ApplicationWindow):
         self.side.pack_start(h, False, False, 0)
         # no GTK selection (it picked rows by itself); the current place is marked by mark_sidebar
         lb = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE); lb.connect("row-activated", self.on_side)
-        for name, target, icon in items:
+        for name, target, icon, *rest in items:
             # not focusable: otherwise the first row takes the keyboard focus
             # when the window opens and stays highlighted wherever you are
             row = Gtk.ListBoxRow(can_focus=False); row.target = target
@@ -345,6 +624,14 @@ class Finder(Gtk.ApplicationWindow):
             img.get_style_context().add_class("dim-label")
             b.pack_start(img, False, False, 0)
             b.pack_start(Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.END), True, True, 0)
+            ej = rest[0] if rest else None
+            if ej is not None:                         # the eject button, like the Mac's sidebar
+                eb = Gtk.Button(image=Gtk.Image.new_from_icon_name("media-eject-symbolic", Gtk.IconSize.MENU),
+                                relief=Gtk.ReliefStyle.NONE, can_focus=False)
+                eb.get_style_context().add_class("fd-eject")
+                eb.set_tooltip_text(tr("Eject", "Espelli") + f" “{name}”")
+                eb.connect("clicked", lambda _b, o=ej: self.eject(o))
+                b.pack_end(eb, False, False, 0)
             row.add(b); lb.add(row)
             if hasattr(self, "dnd_targets") and (isinstance(target, str)):
                 self.dnd_sidebar_row(row)
@@ -352,6 +639,8 @@ class Finder(Gtk.ApplicationWindow):
 
     def on_side(self, lb, row):
         t = row.target
+        if t == ("connect",):
+            self.connect_dialog(); return
         if isinstance(t, tuple):                     # an unmounted volume: mount it, then open it
             def mounted(v, res):
                 try:
@@ -379,6 +668,7 @@ class Finder(Gtk.ApplicationWindow):
         if record and self.folder is not None and not self.folder.equal(f):
             self.history.append(self.folder); self.future.clear()
         self.folder = f
+        self.mount_tried = None
         self.search.set_text("")
         self.back_btn.set_sensitive(bool(self.history)); self.fwd_btn.set_sensitive(bool(self.future))
         self.load()
@@ -404,6 +694,8 @@ class Finder(Gtk.ApplicationWindow):
         f = info_file
         if is_dir:
             self.open_location(f)
+            return
+        if self.launch_desktop_file(f):
             return
         try:
             Gio.AppInfo.launch_default_for_uri(f.get_uri(), None)
@@ -434,18 +726,14 @@ class Finder(Gtk.ApplicationWindow):
         self.folder.enumerate_children_async(ATTRS, Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, None,
                                              self.on_enum, (token, self.folder, None))
 
-    def display_name(self, f):
-        try:
-            return f.query_info("standard::display-name", Gio.FileQueryInfoFlags.NONE, None).get_display_name()
-        except GLib.Error:
-            return f.get_basename() or f.get_uri()
-
     def on_enum(self, src, res, data):
         token, folder, parent = data
         try:
             en = src.enumerate_children_finish(res)
         except GLib.Error as e:
             if token == self.load_token and parent is None:
+                if not getattr(self, "mount_tried", None) == folder.get_uri() and self.try_mount(folder, e):
+                    return
                 self.show_empty(tr("This folder cannot be opened: ", "Questa cartella non si può aprire: ") + e.message)
             return
         en.next_files_async(BATCH, GLib.PRIORITY_DEFAULT, None, self.on_batch, (token, folder, parent, en))
@@ -774,7 +1062,7 @@ class Finder(Gtk.ApplicationWindow):
         for i, f in enumerate(chain[-6:]):
             if i:
                 sep = Gtk.Label(label="›"); sep.set_opacity(0.5); self.pathbar.pack_start(sep, False, False, 0)
-            b = Gtk.Button(label=self.display_name(f) if f.get_parent() else tr("Computer", "Computer"),
+            b = Gtk.Button(label=tr("Computer", "Computer") if f.get_uri() == "file:///" else self.display_name(f),
                            relief=Gtk.ReliefStyle.NONE)
             b.connect("clicked", lambda _b, x=f: self.open_location(x))
             self.pathbar.pack_start(b, False, False, 0)
@@ -820,44 +1108,79 @@ class Finder(Gtk.ApplicationWindow):
         sel = self.selected()
         m = Gtk.Menu()
 
-        def item(label, cb, sensitive=True, accel=None):
-            it = Gtk.MenuItem(label=label); it.connect("activate", lambda *_: cb()); it.set_sensitive(sensitive)
+        def item(label, cb, sensitive=True, accel=None, submenu=None):
+            it = Gtk.MenuItem(label=label); it.set_sensitive(sensitive)
+            if submenu is not None:
+                it.set_submenu(submenu)
+            else:
+                it.connect("activate", lambda *_: cb())
             if accel:
-                it.get_child().set_accel(*Gtk.accelerator_parse(accel)) if hasattr(it.get_child(), "set_accel") else None
+                key, mods = Gtk.accelerator_parse(accel)
+                it.get_child().set_accel(key, mods)
             m.append(it)
 
         def sep():
-            m.append(Gtk.SeparatorMenuItem())
+            if m.get_children() and not isinstance(m.get_children()[-1], Gtk.SeparatorMenuItem):
+                m.append(Gtk.SeparatorMenuItem())
         trash = self.in_trash()
+        files = [f for f, _ in sel]
         if sel:
             item(tr("Open", "Apri"), lambda: [self.activate(f, d) for f, d in sel[:10]])
-            item(tr("Quick Look", "Anteprima rapida"), self.quicklook, any(not d for _, d in sel), "space")
+            if not trash and any(not d for _, d in sel):
+                item(tr("Open With", "Apri con"), None, submenu=self.open_with_menu([f for f, d in sel if not d] or files))
+            if not trash and len(sel) == 1 and sel[0][1]:
+                item(tr("Open in Terminal", "Apri nel Terminale"), lambda: self.open_terminal(files[0]))
             sep()
             if trash:
                 item(tr("Put Back", "Rimetti"), self.act_restore)
                 item(tr("Delete Immediately…", "Elimina definitivamente…"), self.act_delete_now)
             else:
                 item(tr("Move to Trash", "Sposta nel Cestino"), self.act_trash, True, "Delete")
-                sep()
+            sep()
+            item(tr("Get Info", "Informazioni"), self.get_info, True, "<Control>i")
+            if not trash:
                 item(tr("Rename…", "Rinomina…"), self.rename_dialog, len(sel) == 1, "F2")
+                n = len(sel)
+                item(tr(f"Compress “{files[0].get_basename()}”" if n == 1 else f"Compress {n} Items",
+                        f"Comprimi “{files[0].get_basename()}”" if n == 1 else f"Comprimi {n} elementi"), self.act_compress)
+                if any(self.is_archive(f) for f in files):
+                    item(tr("Extract Here", "Estrai qui"), self.act_extract)
                 item(tr("Duplicate", "Duplica"), self.act_duplicate, True, "<Control>d")
+                item(tr("Make Alias", "Crea alias"), self.act_alias, True, "<Control>l")
+                if len(sel) == 1 and files[0].query_file_type(Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, None) == Gio.FileType.SYMBOLIC_LINK:
+                    item(tr("Show Original", "Mostra originale"), self.show_original, True, "<Control>r")
+                item(tr("Quick Look", "Anteprima rapida"), self.quicklook, any(not d for _, d in sel), "space")
                 sep()
                 item(tr("Copy", "Copia"), lambda: self.clip_set("copy"), True, "<Control>c")
                 item(tr("Cut", "Taglia"), lambda: self.clip_set("cut"), True, "<Control>x")
         if not trash:
             item(tr("Paste", "Incolla"), self.paste, True, "<Control>v")
-            item(tr("New Folder", "Nuova cartella"), self.act_new_folder, True, "<Control><Shift>n")
+            if not sel:
+                sep()
+                item(tr("New Folder", "Nuova cartella"), self.act_new_folder, True, "<Control><Shift>n")
+                item(tr("New Document", "Nuovo documento"), None, submenu=self.new_document_menu())
+                sep()
+                item(tr("Get Info", "Informazioni"), lambda: self.get_info([self.folder]), True, "<Control>i")
+                item(tr("Open in Terminal", "Apri nel Terminale"), self.open_terminal)
         else:
-            item(tr("Empty Trash…", "Svuota il Cestino…"), self.empty_trash)
+            sep()
+            item(tr("Empty Trash…", "Svuota il Cestino…"), self.empty_trash, True, "<Control><Shift>Delete")
         sep()
         if sel:
-            item(tr("Copy Path", "Copia percorso"), self.copy_path)
-        item(tr("Open in Thunar", "Apri in Thunar"), self.open_in_thunar)
+            item(tr("Copy Path", "Copia percorso"), self.copy_path, True, "<Control><Shift>c")
         item(tr("Show Hidden Files", "Mostra file nascosti") if not self.cfg["hidden"] else tr("Hide Hidden Files", "Nascondi file nascosti"),
-             lambda: self.hidden_check.set_active(not self.cfg["hidden"]))
+             lambda: self.hidden_check.set_active(not self.cfg["hidden"]), True, "<Control><Shift>period")
+        try:
+            mnt = self.folder.find_enclosing_mount(None)
+        except GLib.Error:
+            mnt = None
+        if mnt and (mnt.can_eject() or mnt.can_unmount()) and not trash:
+            item(tr(f"Eject “{mnt.get_name()}”", f"Espelli “{mnt.get_name()}”"), lambda: self.eject(mnt), True, "<Control>e")
         if self.get_application().undo_stack:
             sep()
             item(tr("Undo ", "Annulla ") + self.get_application().undo_stack[-1][0], self.act_undo, True, "<Control>z")
+        if isinstance(m.get_children()[-1], Gtk.SeparatorMenuItem):
+            m.get_children()[-1].destroy()
         m.show_all(); m.popup_at_pointer(ev)
 
     def quicklook(self):
@@ -868,17 +1191,6 @@ class Finder(Gtk.ApplicationWindow):
     def copy_path(self):
         paths = [f.get_path() or f.get_uri() for f, _ in self.selected()]
         Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("\n".join(paths), -1)
-
-    def open_in_thunar(self):
-        try:
-            subprocess.Popen(["thunar", self.folder.get_path() or self.folder.get_uri()])
-        except OSError:
-            pass
-
-    def message(self, text):
-        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
-                              buttons=Gtk.ButtonsType.OK, text=text)
-        d.run(); d.destroy()
 
     # ---------------------------------------------------------- keyboard (Cmd is Ctrl on MangOS)
     def on_key(self, w, ev):
@@ -913,6 +1225,28 @@ class Finder(Gtk.ApplicationWindow):
             self.empty_trash(); return True
         if k == "F2":
             self.rename_dialog(); return True
+        if ctrl and not shift and k.lower() == "i":
+            self.get_info(); return True
+        if ctrl and not shift and k.lower() == "k":
+            self.connect_dialog(); return True
+        if ctrl and shift and k.lower() == "k":
+            self.open_location("network:///"); return True
+        if ctrl and not shift and k.lower() == "e":
+            self.eject_selected(); return True
+        if ctrl and not shift and k.lower() == "l":
+            self.act_alias(); return True
+        if ctrl and not shift and k.lower() == "r":
+            self.show_original(); return True
+        if ctrl and not shift and k.lower() == "n":
+            self.get_application().new_window(self.folder); return True
+        if ctrl and shift and k.lower() == "h":
+            self.open_location(GLib.get_home_dir()); return True
+        if ctrl and shift and k.lower() == "d":
+            self.open_location(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DESKTOP) or GLib.get_home_dir()); return True
+        if ctrl and shift and k.lower() == "o":
+            self.open_location(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS) or GLib.get_home_dir()); return True
+        if ctrl and k == "comma":
+            self.get_application().activate_action("preferences", None); return True
         if ctrl and k in ("bracketleft",):
             self.go_back(); return True
         if ctrl and k in ("bracketright",):
@@ -994,11 +1328,15 @@ class Finder(Gtk.ApplicationWindow):
         app = self.get_application()
         app.clip = (mode, files)
         text = "\n".join(f.get_path() or f.get_uri() for f in files)
-        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
+        if not set_file_clipboard(mode, [f.get_uri() for f in files], text):
+            Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
         app.clip_text = text
         n = len(files)
-        self.status.set_text((tr(f"{n} item(s) copied", f"{n} elementi copiati") if mode == "copy" else
-                              tr(f"{n} item(s) cut: paste to move", f"{n} elementi tagliati: incolla per spostarli")))
+        one = n == 1
+        self.status.set_text((tr(f"{n} item{'' if one else 's'} copied", "1 elemento copiato" if one else f"{n} elementi copiati")
+                              if mode == "copy" else
+                              tr(f"{n} item{'' if one else 's'} cut: paste to move",
+                                 "1 elemento tagliato: incolla per spostarlo" if one else f"{n} elementi tagliati: incolla per spostarli")))
 
     def paste(self, move=False):
         app = self.get_application()
@@ -1032,130 +1370,9 @@ class Finder(Gtk.ApplicationWindow):
             return self.columns.cols[-1][0]
         return self.folder
 
-    def run_job(self, kind, files, dest=None, label=None, **kw):
-        if self.in_trash() and kind in ("copy", "move", "new_folder", "duplicate") and dest is not None and dest.get_uri_scheme() == "trash":
-            if kind == "move":
-                kind, dest = "trash", None          # dropping into the Trash = Move to Trash
-            else:
-                return
-        job = fileops.Job(kind, files, dest, copy_word=tr("copy", "copia"),
-                          folder_word=tr("untitled folder", "Nuova cartella"), **kw)
-        job.progress = lambda d, t, n: GLib.idle_add(self.on_progress, job, d, t, n)
-        job.conflict_cb = lambda src, dst: self.ask_main(self.ask_conflict, src, dst)
-        job.confirm = lambda what, fs: self.ask_main(self.ask_confirm, what, fs)
-        job.label = label or self.job_label(kind, files, dest)
-        job.started = time.monotonic()
-        self.jobs.append(job)
-
-        def work():
-            job.run()
-            GLib.idle_add(self.job_done, job)
-        threading.Thread(target=work, daemon=True).start()
-        GLib.timeout_add(500, self.maybe_show_progress, job)
-        return job
-
-    def job_label(self, kind, files, dest):
-        n = len(files)
-        what = files[0].get_basename() if n == 1 else tr(f"{n} items", f"{n} elementi")
-        where = self.display_name(dest) if dest else ""
-        return {"copy": tr(f"Copying {what} to “{where}”", f"Copia di {what} in “{where}”"),
-                "move": tr(f"Moving {what} to “{where}”", f"Spostamento di {what} in “{where}”"),
-                "trash": tr(f"Moving {what} to the Trash", f"Spostamento di {what} nel Cestino"),
-                "delete": tr(f"Deleting {what}", f"Eliminazione di {what}"),
-                "empty_trash": tr("Emptying the Trash", "Svuotamento del Cestino"),
-                "duplicate": tr(f"Duplicating {what}", f"Duplicazione di {what}"),
-                "restore": tr(f"Putting back {what}", f"Ripristino di {what}")}.get(kind, "")
-
-    def ask_main(self, fn, *args):
-        """Runs a dialog on the main thread and waits for the answer (called from a job's thread)."""
-        box, ev = {}, threading.Event()
-
-        def run():
-            box["r"] = fn(*args); ev.set()
-            return False
-        GLib.idle_add(run)
-        ev.wait()
-        return box["r"]
-
-    def ask_conflict(self, src, dst):
-        folder = fileops.is_dir(dst)
-        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
-                              buttons=Gtk.ButtonsType.NONE,
-                              text=tr(f"An item named “{dst.get_basename()}” already exists in this location.",
-                                      f"In questa posizione esiste già un elemento chiamato “{dst.get_basename()}”."))
-        d.format_secondary_text(tr("Do you want to replace it with the one you are copying?",
-                                   "Vuoi sostituirlo con quello che stai copiando?") if not folder else
-                                tr("Merging adds the items of the folder you are copying; nothing is deleted.",
-                                   "Unire aggiunge gli elementi della cartella che stai copiando; non viene eliminato niente."))
-        d.add_buttons(tr("Stop", "Interrompi"), 1, tr("Skip", "Salta"), 2, tr("Keep Both", "Mantieni entrambi"), 3,
-                      tr("Merge", "Unisci") if folder else tr("Replace", "Sostituisci"), 4)
-        allc = Gtk.CheckButton(label=tr("Apply to all", "Applica a tutti"), margin_start=12)
-        d.get_message_area().pack_start(allc, False, False, 0); allc.show()
-        d.set_default_response(3)
-        r = d.run(); a = allc.get_active(); d.destroy()
-        return ({1: "cancel", 2: "skip", 3: "keep", 4: "replace"}.get(r, "cancel"), a)
-
-    def ask_confirm(self, what, files):
-        if what == "no-trash":
-            n = len(files)
-            return self.yes_no(tr(f"“{files[0].get_basename()}” cannot be moved to the Trash." if n == 1 else
-                                  f"{n} items cannot be moved to the Trash.",
-                                  f"“{files[0].get_basename()}” non può andare nel Cestino." if n == 1 else
-                                  f"{n} elementi non possono andare nel Cestino."),
-                               tr("This disk has no Trash. Delete immediately? You cannot undo this.",
-                                  "Questo disco non ha un Cestino. Eliminare subito? Non si potrà annullare."),
-                               tr("Delete", "Elimina"))
-        return False
-
-    def yes_no(self, text, sub, ok_label):
-        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
-                              buttons=Gtk.ButtonsType.NONE, text=text)
-        d.format_secondary_text(sub)
-        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, ok_label, Gtk.ResponseType.OK)
-        d.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("destructive-action")
-        d.set_default_response(Gtk.ResponseType.CANCEL)
-        r = d.run(); d.destroy()
-        return r == Gtk.ResponseType.OK
-
-    def maybe_show_progress(self, job):
-        if job in self.jobs:                       # still running after half a second: show the bar
-            self.prog_rev.set_reveal_child(True)
-        return False
-
-    def on_progress(self, job, done, total, name):
-        if not self.jobs or job is not self.jobs[-1]:
-            return False
-        frac = done / total if total else 0
-        self.prog_bar.set_fraction(min(1, frac))
-        left = ""
-        el = time.monotonic() - job.started
-        if frac > 0.02 and el > 2:
-            secs = int(el / frac - el)
-            left = (tr(f" — about {secs} s left", f" — circa {secs} s") if secs < 90 else
-                    tr(f" — about {secs // 60} min left", f" — circa {secs // 60} min"))
-        self.prog_label.set_text(f"{job.label}  {int(frac * 100)}%{left}")
-        return False
-
-    def stop_jobs(self):
-        for j in list(self.jobs):
-            j.cancel()
-
-    def job_done(self, job):
-        if job in self.jobs:
-            self.jobs.remove(job)
-        if not self.jobs:
-            self.prog_rev.set_reveal_child(False)
-        if job.undo:
-            self.get_application().undo_stack.append((job.label, job.undo))
-        self.reselect |= {f.get_uri() for f in job.created}
-        errs = [e for e in job.errors if e != "cancelled"]
-        if errs:
-            self.message(tr("The operation could not be completed:\n", "L'operazione non è stata completata:\n") +
-                         "\n".join(errs[:5]))
-        if job.kind == "new_folder" and job.created and not errs:
+    def after_job(self, job, errs):
+        if job.kind in ("new_folder", "new_file") and job.created and not errs:
             GLib.timeout_add(450, self.rename_dialog, job.created[0])
-        self.reload_keep()
-        return False
 
     # the actions
     def act_trash(self):
@@ -1194,35 +1411,6 @@ class Finder(Gtk.ApplicationWindow):
         files = [f for f, _ in self.selected()]
         if files and not self.in_trash():
             self.run_job("duplicate", files)
-
-    def rename_dialog(self, f=None):
-        if f is None:
-            sel = self.selected()
-            if len(sel) != 1 or self.in_trash():
-                return False
-            f = sel[0][0]
-        old = f.get_basename()
-        d = Gtk.Dialog(title=tr("Rename", "Rinomina"), transient_for=self, modal=True)
-        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, tr("Rename", "Rinomina"), Gtk.ResponseType.OK)
-        d.set_default_response(Gtk.ResponseType.OK)
-        e = Gtk.Entry(text=old, activates_default=True, width_chars=36, margin=14)
-        d.get_content_area().add(e); d.show_all()
-        base, ext = fileops.split_ext(old)
-        e.select_region(0, len(base) if not fileops.is_dir(f) else -1)   # name without the extension, like the Mac
-        while d.run() == Gtk.ResponseType.OK:
-            new = e.get_text().strip()
-            if new == old or not new:
-                break
-            job = fileops.Job("rename", [f], new_name=new).run()
-            if job.errors:
-                self.message(tr("Cannot rename: ", "Impossibile rinominare: ") + job.errors[0])
-                continue
-            self.get_application().undo_stack.append((tr("Rename", "Rinomina"), job.undo))
-            self.reselect |= {c.get_uri() for c in job.created}
-            self.reload_keep()
-            break
-        d.destroy()
-        return False
 
     def act_undo(self):
         stack = self.get_application().undo_stack
@@ -1417,6 +1605,297 @@ class Finder(Gtk.ApplicationWindow):
             box.pack_start(grid, False, False, 0)
         box.show_all()
         return box
+
+    # ---------------------------------------------------------- drives and network (stage 4)
+    def eject(self, obj):
+        """Eject (or unmount) a drive, a USB stick, a phone or a network share."""
+        op = Gtk.MountOperation.new(self)
+        name = obj.get_name()
+
+        def done(o, res):
+            try:
+                (o.eject_with_operation_finish if eject else o.unmount_with_operation_finish)(res)
+            except GLib.Error as e:
+                if e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.BUSY):
+                    self.message(tr(f"“{name}” cannot be ejected because it is in use.",
+                                    f"“{name}” non può essere espulso perché è in uso.") + "\n" +
+                                 tr("Close the files and apps that use it, then try again.",
+                                    "Chiudi i file e le app che lo usano, poi riprova."))
+                elif not e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.FAILED_HANDLED):
+                    self.message(tr("Cannot eject: ", "Impossibile espellere: ") + e.message)
+                return
+            self.status.set_text(tr(f"“{name}” can now be removed", f"Ora puoi rimuovere “{name}”"))
+        if isinstance(obj, Gio.Mount):
+            root = obj.get_root()
+            if self.folder and (self.folder.equal(root) or self.folder.has_prefix(root)):
+                self.open_location(GLib.get_home_dir())      # do not keep the drive busy ourselves
+            if self.monitor:
+                self.monitor.cancel(); self.monitor = None
+            eject = obj.can_eject()
+        else:
+            eject = True
+        if eject:
+            obj.eject_with_operation(Gio.MountUnmountFlags.NONE, op, None, done)
+        else:
+            obj.unmount_with_operation(Gio.MountUnmountFlags.NONE, op, None, done)
+
+    def eject_selected(self):
+        """Ctrl+E (Cmd+E): eject the drive shown, or the one selected."""
+        for f in [f for f, _ in self.selected()] + [self.folder]:
+            try:
+                m = f.find_enclosing_mount(None)
+            except GLib.Error:
+                continue
+            if m and (m.can_eject() or m.can_unmount()):
+                self.eject(m); return
+
+    def try_mount(self, folder, err):
+        """A network place or a phone not connected yet: connect, then show it."""
+        if not (err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_MOUNTED) or
+                err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_DIRECTORY) or
+                err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_SUPPORTED)):
+            return False
+        self.mount_tried = folder.get_uri()
+        self.status.set_text(tr("Connecting…", "Connessione…"))
+        op = Gtk.MountOperation.new(self)
+        try:
+            mountable = folder.query_file_type(Gio.FileQueryInfoFlags.NONE, None) == Gio.FileType.MOUNTABLE
+        except GLib.Error:
+            mountable = False
+
+        def done(f, res):
+            try:
+                target = f.mount_mountable_finish(res) if mountable else (f.mount_enclosing_volume_finish(res) or f)
+            except GLib.Error as e:
+                if e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.ALREADY_MOUNTED):
+                    target = f
+                else:
+                    msg = "" if e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.FAILED_HANDLED) else e.message
+                    self.show_empty(tr("Not connected", "Non connesso") + (": " + msg if msg else ""))
+                    return
+            if folder.equal(self.folder):
+                if isinstance(target, Gio.File) and not target.equal(folder):
+                    self.folder = target
+                self.load()
+        if mountable:
+            folder.mount_mountable(Gio.MountMountFlags.NONE, op, None, done)
+        else:
+            folder.mount_enclosing_volume(Gio.MountMountFlags.NONE, op, None, done)
+        return True
+
+    def connect_dialog(self):
+        """Go > Connect to Server (Ctrl+K), like the Mac's: smb://, sftp://, ftp://, dav://..."""
+        d = Gtk.Dialog(title=tr("Connect to Server", "Connetti al server"), transient_for=self, modal=True)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, tr("Connect", "Connetti"), Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=14)
+        d.get_content_area().add(box)
+        box.pack_start(Gtk.Label(label=tr("Server Address:", "Indirizzo server:"), xalign=0), False, False, 0)
+        recent = self.cfg.get("servers", [])
+        e = Gtk.Entry(activates_default=True, width_chars=40, placeholder_text="smb://nas.local/Documenti")
+        if recent:
+            e.set_text(recent[0])
+        box.pack_start(e, False, False, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=48, label=tr(
+            "Examples: smb://computer/folder (Windows, Mac, NAS), sftp://user@computer, ftp://server, davs://server/path",
+            "Esempi: smb://computer/cartella (Windows, Mac, NAS), sftp://utente@computer, ftp://server, davs://server/percorso"))
+        hint.get_style_context().add_class("fd-prev-key"); box.pack_start(hint, False, False, 0)
+        if recent:
+            box.pack_start(Gtk.Label(label=tr("Recent Servers:", "Server recenti:"), xalign=0, margin_top=6), False, False, 0)
+            lb = Gtk.ListBox()
+            for r in recent[:6]:
+                row = Gtk.ListBoxRow(); row.uri = r
+                row.add(Gtk.Label(label=r, xalign=0, margin=4)); lb.add(row)
+            lb.connect("row-activated", lambda _l, row: (e.set_text(row.uri), d.response(Gtk.ResponseType.OK)))
+            lb.connect("row-selected", lambda _l, row: row and e.set_text(row.uri))
+            fr = Gtk.Frame(); fr.add(lb); box.pack_start(fr, False, False, 0)
+        d.show_all()
+        r = d.run(); text = e.get_text().strip(); d.destroy()
+        if r != Gtk.ResponseType.OK or not text:
+            return
+        if "://" not in text:
+            text = "smb://" + text.lstrip("/\\").replace("\\", "/")
+        self.cfg["servers"] = [text] + [x for x in recent if x != text][:9]
+        save_cfg(self.cfg)
+        self.mount_tried = None
+        self.open_location(text)
+
+    # ---------------------------------------------------------- open with, info, archives, terminal
+    def launch_desktop_file(self, f):
+        """A launcher (.desktop) runs its app, like an app on the Mac; only
+        when it is executable or on the Desktop (the same rule as the desktop)."""
+        p = f.get_path()
+        if not p or not p.endswith(".desktop"):
+            return False
+        desk = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DESKTOP) or ""
+        if not (os.access(p, os.X_OK) or (desk and os.path.dirname(p) == desk)):
+            return False
+        try:
+            ai = Gio.DesktopAppInfo.new_from_filename(p)
+            if ai:
+                ai.launch([], None)
+                return True
+        except (GLib.Error, TypeError):
+            pass
+        return False
+
+    def content_type(self, f):
+        try:
+            return f.query_info("standard::content-type", Gio.FileQueryInfoFlags.NONE, None).get_content_type() or ""
+        except GLib.Error:
+            return ""
+
+    def open_with_menu(self, files):
+        """Open With submenu: the default app first, the others, then Other…"""
+        m = Gtk.Menu()
+        ctype = self.content_type(files[0])
+        default = Gio.AppInfo.get_default_for_type(ctype, False) if ctype else None
+        apps = Gio.AppInfo.get_recommended_for_type(ctype) if ctype else []
+        seen = set()
+        for i, a in enumerate(([default] if default else []) + list(apps)):
+            if a is None or a.get_id() in seen or not a.should_show() and a is not default:
+                continue
+            seen.add(a.get_id())
+            label = a.get_display_name() + (tr(" (default)", " (predefinita)") if default and a.get_id() == default.get_id() else "")
+            it = Gtk.MenuItem()
+            hb = Gtk.Box(spacing=8)
+            icon = a.get_icon()
+            hb.pack_start(Gtk.Image.new_from_gicon(icon, Gtk.IconSize.MENU) if icon else Gtk.Image(), False, False, 0)
+            hb.pack_start(Gtk.Label(label=label, xalign=0), True, True, 0)
+            it.add(hb)
+            it.connect("activate", lambda _i, app=a: self.launch_with(app, files))
+            m.append(it)
+            if i == 0 and default:
+                m.append(Gtk.SeparatorMenuItem())
+        if seen:
+            m.append(Gtk.SeparatorMenuItem())
+        other = Gtk.MenuItem(label=tr("Other…", "Altro…"))
+        other.connect("activate", lambda *_: self.choose_app(files))
+        m.append(other)
+        return m
+
+    def launch_with(self, app, files):
+        try:
+            app.launch(files, Gdk.Display.get_default().get_app_launch_context())
+        except GLib.Error as e:
+            self.message(tr("Cannot open: ", "Impossibile aprire: ") + e.message)
+
+    def choose_app(self, files, open_now=True, always=False):
+        """Choose Application (Open With > Other…), with “Always Open With”."""
+        ctype = self.content_type(files[0])
+        d = Gtk.AppChooserDialog.new(self, Gtk.DialogFlags.MODAL, files[0])
+        d.set_title(tr("Open With", "Apri con"))
+        w = d.get_widget(); w.set_show_all(True)
+        chk = Gtk.CheckButton(label=tr(f"Always open “{self.describe(ctype)}” files with this app",
+                                       f"Apri sempre i file “{self.describe(ctype)}” con questa app"), margin=8)
+        chk.set_active(always)
+        d.get_content_area().pack_end(chk, False, False, 0); chk.show()
+        r = d.run(); app = d.get_app_info(); always = chk.get_active(); d.destroy()
+        if r != Gtk.ResponseType.OK or app is None:
+            return
+        if always and ctype:
+            try:
+                app.set_as_default_for_type(ctype)
+            except GLib.Error:
+                pass
+        if open_now:
+            self.launch_with(app, files)
+
+    def get_info(self, files=None):
+        files = files or [f for f, _ in self.selected()] or [self.folder]
+        for f in files[:10]:
+            InfoWindow(self, f).show_all()
+
+    ARCHIVES = ("application/zip", "application/x-tar", "application/x-compressed-tar", "application/x-bzip-compressed-tar",
+                "application/x-xz-compressed-tar", "application/x-zstd-compressed-tar", "application/x-7z-compressed",
+                "application/x-rar", "application/vnd.rar", "application/gzip", "application/x-bzip", "application/x-xz",
+                "application/x-lzma", "application/x-cpio", "application/vnd.ms-cab-compressed", "application/x-archive")
+
+    def is_archive(self, f):
+        return self.content_type(f) in self.ARCHIVES
+
+    def act_compress(self):
+        files = [f for f, _ in self.selected()]
+        if files and not self.in_trash():
+            self.run_job("compress", files, files[0].get_parent(), new_name=tr("Archive", "Archivio"))
+
+    def act_extract(self):
+        files = [f.get_path() for f, _ in self.selected() if f.get_path() and self.is_archive(f)]
+        if files:
+            try:
+                subprocess.Popen(["engrampa", "--extract-here", "--force"] + files)
+            except OSError as e:
+                self.message(str(e))
+
+    def open_terminal(self, f=None):
+        path = (f or self.drop_folder()).get_path()
+        if not path:
+            return
+        for cmd in (["xfce4-terminal", "--working-directory=" + path], ["x-terminal-emulator"]):
+            try:
+                subprocess.Popen(cmd, cwd=path); return
+            except OSError:
+                continue
+
+    def act_alias(self):
+        files = [f for f, _ in self.selected()]
+        if files and not self.in_trash():
+            self.run_job("link", files, self.drop_folder())
+
+    def templates(self):
+        """Documents in ~/Templates (Modelli): File > New Document."""
+        t = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_TEMPLATES)
+        out = []
+        if t and os.path.isdir(t) and os.path.realpath(t) != os.path.realpath(GLib.get_home_dir()):
+            for n in sorted(os.listdir(t), key=str.lower):
+                if not n.startswith(".") and os.path.isfile(os.path.join(t, n)):
+                    out.append(Gio.File.new_for_path(os.path.join(t, n)))
+        return out, t
+
+    def new_document_menu(self):
+        m = Gtk.Menu()
+        it = Gtk.MenuItem(label=tr("Empty Text Document", "Documento di testo vuoto"))
+        it.connect("activate", lambda *_: self.act_new_document())
+        m.append(it)
+        tpls, tdir = self.templates()
+        if tpls:
+            m.append(Gtk.SeparatorMenuItem())
+        for t in tpls[:30]:
+            it = Gtk.MenuItem(label=fileops.split_ext(t.get_basename())[0])
+            it.connect("activate", lambda _i, x=t: self.act_new_document(x))
+            m.append(it)
+        if tdir:
+            m.append(Gtk.SeparatorMenuItem())
+            it = Gtk.MenuItem(label=tr("Open Templates Folder", "Apri la cartella Modelli"))
+            it.connect("activate", lambda *_: (os.makedirs(tdir, exist_ok=True), self.open_location(tdir)))
+            m.append(it)
+        return m
+
+    def act_new_document(self, template=None):
+        if self.in_trash():
+            return
+        if template is None:
+            self.run_job("new_file", [], self.drop_folder(), new_name=tr("untitled.txt", "Senza titolo.txt"))
+        else:
+            self.run_job("new_file", [], self.drop_folder(), template=template)
+
+    def show_original(self):
+        """For an alias: show the original, selected (Cmd+R on the Mac)."""
+        for f, _ in self.selected()[:1]:
+            try:
+                info = f.query_info("standard::symlink-target", Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, None)
+            except GLib.Error:
+                continue
+            t = info.get_attribute_byte_string("standard::symlink-target") if info.has_attribute("standard::symlink-target") else None
+            if t:
+                target = f.get_parent().resolve_relative_path(t)
+                self.reveal(target)
+
+    def reveal(self, target):
+        parent = target.get_parent()
+        if parent is not None:
+            self.reselect = {target.get_uri()}
+            self.open_location(parent)
 
     def on_close(self, *_):
         w, h = self.get_size()
@@ -1634,27 +2113,614 @@ class GalleryView(Gtk.Box):
         return [(row[C_FILE], row[C_ISDIR])]
 
 
+class InfoWindow(Gtk.Window):
+    """Get Info (Ctrl+I), like the Mac's Info window: kind, size (counted for
+    folders), where, dates, Open With for all files of that kind, sharing
+    and permissions; for a drive, its capacity."""
+    def __init__(self, finder, f):
+        super().__init__(title=tr("Info: ", "Info: ") + (finder.display_name(f) or ""), transient_for=None)
+        self.finder, self.f = finder, f
+        self.set_default_size(330, -1); self.set_resizable(False); self.set_icon_name("dialog-information")
+        self.cancel = Gio.Cancellable()
+        self.connect("destroy", lambda *_: self.cancel.cancel())
+        self.connect("key-press-event", lambda w, ev: (Gdk.keyval_name(ev.keyval) in ("Escape",) or
+                     (ev.state & Gdk.ModifierType.CONTROL_MASK and Gdk.keyval_name(ev.keyval) in ("w", "i"))) and self.destroy())
+        try:
+            info = f.query_info("*", Gio.FileQueryInfoFlags.NONE, None)
+        except GLib.Error as e:
+            self.add(Gtk.Label(label=e.message, margin=20)); return
+        self.info = info
+        is_dir = info.get_file_type() in (Gio.FileType.DIRECTORY, Gio.FileType.MOUNTABLE)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=16); self.add(box)
+        top = Gtk.Box(spacing=12)
+        ctype = info.get_content_type() or ""
+        icon = finder.icon_for(info, 64, f, ctype)
+        top.pack_start(Gtk.Image.new_from_pixbuf(icon) if icon else Gtk.Image(), False, False, 0)
+        names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, spacing=2)
+        nl = Gtk.Label(label=info.get_display_name(), xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE, max_width_chars=28)
+        nl.get_style_context().add_class("fd-prev-name"); names.pack_start(nl, False, False, 0)
+        self.top_size = Gtk.Label(xalign=0); self.top_size.get_style_context().add_class("fd-prev-key")
+        names.pack_start(self.top_size, False, False, 0)
+        top.pack_start(names, True, True, 0); box.pack_start(top, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=10, row_spacing=5)
+        self.row = 0
+
+        def add(k, v):
+            a = Gtk.Label(label=k, xalign=1); a.get_style_context().add_class("fd-prev-key")
+            b = v if isinstance(v, Gtk.Widget) else Gtk.Label(label=v, xalign=0, wrap=True,
+                                                               max_width_chars=30, ellipsize=Pango.EllipsizeMode.NONE)
+            grid.attach(a, 0, self.row, 1, 1); grid.attach(b, 1, self.row, 1, 1); self.row += 1
+            return b
+        box.pack_start(self.section(tr("General", "Generale")), False, False, 0)
+        add(tr("Kind:", "Tipo:"), tr("Folder", "Cartella") if is_dir else finder.describe(ctype))
+        self.size_label = add(tr("Size:", "Dimensione:"), "")
+        if is_dir:
+            self.size_label.set_text(tr("Calculating…", "Calcolo in corso…"))
+            threading.Thread(target=self.count, daemon=True).start()
+        else:
+            sz = info.get_size()
+            txt = f"{human_size(sz)} ({f'{sz:,}'.replace(',', '.')} byte)" if sz >= 1000 else human_size(sz)
+            self.size_label.set_text(txt); self.top_size.set_text(human_size(sz))
+        parent = f.get_parent()
+        if parent is not None:
+            add(tr("Where:", "Posizione:"), parent.get_path() or parent.get_uri())
+        tgt = info.get_attribute_byte_string("standard::symlink-target") if info.has_attribute("standard::symlink-target") else None
+        if tgt:
+            add(tr("Original:", "Originale:"), tgt)
+        for key, label in (("time::created", tr("Created:", "Creato:")), ("time::modified", tr("Modified:", "Modificato:"))):
+            if info.has_attribute(key):
+                add(label, time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get_attribute_uint64(key))))
+        if ctype.startswith("image/") and f.get_path():
+            try:
+                fmt, w, h = GdkPixbuf.Pixbuf.get_file_info(f.get_path())
+                if fmt:
+                    add(tr("Dimensions:", "Dimensioni:"), f"{w} × {h}")
+            except GLib.Error:
+                pass
+        # a drive or the root of a disk: capacity and free space
+        try:
+            fs = f.query_filesystem_info("filesystem::size,filesystem::free,filesystem::type", None)
+        except GLib.Error:
+            fs = None
+        try:
+            mnt = f.find_enclosing_mount(None)
+        except GLib.Error:
+            mnt = None
+        if fs is not None and (f.get_path() in ("/",) or (mnt is not None and mnt.get_root().equal(f))):
+            if fs.has_attribute("filesystem::size"):
+                add(tr("Capacity:", "Capacità:"), human_size(fs.get_attribute_uint64("filesystem::size")))
+                add(tr("Available:", "Disponibile:"), human_size(fs.get_attribute_uint64("filesystem::free")))
+            if fs.has_attribute("filesystem::type"):
+                add(tr("Format:", "Formato:"), fs.get_attribute_string("filesystem::type"))
+        box.pack_start(grid, False, False, 0)
+
+        if not is_dir and ctype:
+            box.pack_start(self.section(tr("Open With", "Apri con")), False, False, 0)
+            store = Gtk.ListStore(Gio.Icon, str, object)
+            default = Gio.AppInfo.get_default_for_type(ctype, False)
+            seen = set()
+            for a in ([default] if default else []) + list(Gio.AppInfo.get_all_for_type(ctype)):
+                if a is None or a.get_id() in seen:
+                    continue
+                seen.add(a.get_id())
+                store.append([a.get_icon(), a.get_display_name() + (tr(" (default)", " (predefinita)")
+                              if default and a.get_id() == default.get_id() else ""), a])
+            ob = Gtk.ComboBox(model=store)
+            ri = Gtk.CellRendererPixbuf(); ob.pack_start(ri, False); ob.add_attribute(ri, "gicon", 0)
+            rt = Gtk.CellRendererText(ellipsize=Pango.EllipsizeMode.END); ob.pack_start(rt, True); ob.add_attribute(rt, "text", 1)
+            if len(store):
+                ob.set_active(0)
+            else:
+                store.append([None, tr("No app for this kind of file", "Nessuna app per questo tipo di file"), None])
+                ob.set_active(0); ob.set_sensitive(False)
+            box.pack_start(ob, False, False, 0)
+            hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=40, label=tr(
+                "Use this app to open all documents like this one.", "Usa questa app per aprire tutti i documenti come questo."))
+            hint.get_style_context().add_class("fd-prev-key"); box.pack_start(hint, False, False, 0)
+            cb = Gtk.Button(label=tr("Change All…", "Cambia tutto…"), halign=Gtk.Align.START)
+            cb.set_sensitive(False)
+
+            def change_all(*_):
+                it = ob.get_active_iter()
+                app = store[it][2] if it else None
+                if app:
+                    try:
+                        app.set_as_default_for_type(ctype)
+                        cb.set_label(tr("Done", "Fatto")); cb.set_sensitive(False)
+                    except GLib.Error as e:
+                        finder.message(e.message)
+
+            def picked(*_):
+                it = ob.get_active_iter()
+                app = store[it][2] if it else None
+                cb.set_label(tr("Change All…", "Cambia tutto…"))
+                cb.set_sensitive(bool(app) and not (default and app.get_id() == default.get_id()))
+            cb.connect("clicked", change_all)
+            ob.connect("changed", picked)
+            box.pack_start(cb, False, False, 0)
+
+        if f.get_path():
+            box.pack_start(self.section(tr("Sharing & Permissions", "Condivisione e permessi")), False, False, 0)
+            box.pack_start(self.permissions(), False, False, 0)
+
+    def section(self, title):
+        l = Gtk.Label(label=title, xalign=0, margin_top=6)
+        l.get_style_context().add_class("fd-side-head"); l.set_margin_start(0)
+        return l
+
+    def count(self):
+        """Size of a folder, counted in the background (shown as it grows)."""
+        total, n, last = 0, 0, 0
+        stack = [self.f]
+        while stack and not self.cancel.is_cancelled():
+            d = stack.pop()
+            try:
+                en = d.enumerate_children("standard::name,standard::type,standard::size", Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, self.cancel)
+                for ci in en:
+                    if ci.get_file_type() == Gio.FileType.DIRECTORY:
+                        stack.append(d.get_child(ci.get_name()))
+                    else:
+                        total += ci.get_size()
+                    n += 1
+                en.close(None)
+            except GLib.Error:
+                continue
+            if time.monotonic() - last > 0.3:
+                last = time.monotonic(); GLib.idle_add(self.show_count, total, n, False)
+        GLib.idle_add(self.show_count, total, n, True)
+
+    def show_count(self, total, n, final):
+        if self.cancel.is_cancelled():
+            return False
+        items = tr(f"{n} items", f"{n} elementi")
+        self.size_label.set_text(f"{human_size(total)} ({f'{total:,}'.replace(',', '.')} byte) — {items}" +
+                                 ("" if final else "…"))
+        self.top_size.set_text(human_size(total))
+        return False
+
+    def permissions(self):
+        """Owner, group and everyone: Read & Write / Read only / No Access."""
+        p = self.f.get_path()
+        try:
+            st = os.lstat(p)
+        except OSError:
+            return Gtk.Label()
+        import grp, pwd
+        mine = st.st_uid == os.getuid()
+        grid = Gtk.Grid(column_spacing=10, row_spacing=4)
+        choices = [(6, tr("Read & Write", "Lettura e scrittura")), (4, tr("Read only", "Sola lettura")), (0, tr("No Access", "Nessun accesso"))]
+        try:
+            owner = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            owner = str(st.st_uid)
+        try:
+            group = grp.getgrgid(st.st_gid).gr_name
+        except KeyError:
+            group = str(st.st_gid)
+        rows = ((owner + (tr(" (Me)", " (io)") if mine else ""), 6), (group, 3), (tr("everyone", "tutti"), 0))
+        is_dir = os.path.isdir(p)
+
+        def changed(combo, shift):
+            v = int(combo.get_active_id())
+            mode = os.lstat(p).st_mode & 0o7777
+            mode &= ~(0o7 << shift)
+            bits = v | (1 if (is_dir and v) else 0)          # folders: open (x) whenever readable
+            if not is_dir and (mode >> shift) & 1:
+                bits |= 1                                     # keep "executable" on programs
+            try:
+                os.chmod(p, mode | (bits << shift))
+            except OSError as e:
+                self.finder.message(tr("Cannot change permissions: ", "Impossibile cambiare i permessi: ") + str(e))
+        for i, (who, shift) in enumerate(rows):
+            perm = (st.st_mode >> shift) & 0o6
+            perm = 6 if perm == 6 else (4 if perm & 4 else 0)
+            a = Gtk.Label(label=who, xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=16)
+            c = Gtk.ComboBoxText()
+            for v, l in choices:
+                c.append(str(v), l)
+            c.set_active_id(str(perm)); c.set_sensitive(mine)
+            c.connect("changed", changed, shift)
+            grid.attach(a, 0, i, 1, 1); grid.attach(c, 1, i, 1, 1)
+        if not mine:
+            note = Gtk.Label(label=tr("Only the owner can change these.", "Solo il proprietario può cambiarli."), xalign=0)
+            note.get_style_context().add_class("fd-prev-key"); grid.attach(note, 0, 3, 2, 1)
+        return grid
+
+
+class OpsWindow(Jobs, Gtk.ApplicationWindow):
+    """A small progress window for what the desktop (or another app) asks
+    Mango Finder to do through D-Bus: copy, move, Trash, rename, new file."""
+    def __init__(self, app):
+        super().__init__(application=app, title="Mango Finder")
+        self.set_default_size(460, -1); self.set_resizable(False)
+        self.set_icon_name("system-file-manager"); self.set_position(Gtk.WindowPosition.CENTER)
+        self.add(self.build_progress())
+        self.reselect = set()
+        self.connect("delete-event", lambda *_: (self.stop_jobs(), self.hide()) and True)
+        self.icon_theme = Gtk.IconTheme.get_default()
+
+    def maybe_show_progress(self, job):
+        if job in self.jobs:
+            self.show_all(); self.prog_rev.set_reveal_child(True)
+        return False
+
+    def after_job(self, job, errs):
+        if not self.jobs:
+            self.hide()
+        if job.kind in ("new_folder", "new_file") and job.created and not errs:
+            GLib.idle_add(self.rename_dialog, job.created[0])
+
+
+class Prefs(Gtk.Window):
+    """Mango Finder Settings (Ctrl+,): new windows show..., USB sticks and drives."""
+    def __init__(self):
+        super().__init__(title=tr("Mango Finder Settings", "Impostazioni di Mango Finder"))
+        self.set_default_size(440, -1); self.set_resizable(False); self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("system-file-manager")
+        c = load_cfg()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=20); self.add(box)
+        row = Gtk.Box(spacing=8)
+        row.pack_start(Gtk.Label(label=tr("New windows show:", "Le nuove finestre mostrano:")), False, False, 0)
+        combo = Gtk.ComboBoxText()
+        for k, l in (("home", GLib.get_user_name()), ("desktop", tr("Desktop", "Scrivania")),
+                     ("documents", tr("Documents", "Documenti")), ("recents", tr("Recents", "Recenti"))):
+            combo.append(k, l)
+        combo.set_active_id(c.get("new_window", "home"))
+        row.pack_start(combo, False, False, 0); box.pack_start(row, False, False, 0)
+        h = Gtk.Label(label=tr("USB sticks, drives, phones and cameras", "Chiavette USB, dischi, telefoni e fotocamere"),
+                      xalign=0, margin_top=8)
+        h.get_style_context().add_class("fd-prev-name"); box.pack_start(h, False, False, 0)
+        am = Gtk.CheckButton(label=tr("Open them automatically when connected", "Aprili automaticamente quando li colleghi"))
+        am.set_active(c.get("automount", True)); box.pack_start(am, False, False, 0)
+        ao = Gtk.CheckButton(label=tr("Show a window with their files", "Mostra una finestra con i loro file"), margin_start=24)
+        ao.set_active(c.get("autoopen", True)); ao.set_sensitive(am.get_active()); box.pack_start(ao, False, False, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=52, label=tr(
+            "Eject them with the button next to their name in the sidebar before you unplug them.",
+            "Prima di scollegarli, espellili con il pulsante accanto al nome nella barra laterale."))
+        hint.get_style_context().add_class("fd-prev-key"); box.pack_start(hint, False, False, 0)
+
+        def changed(*_):
+            ao.set_sensitive(am.get_active())
+            save_cfg({"new_window": combo.get_active_id(), "automount": am.get_active(), "autoopen": ao.get_active()}, PREF_KEYS)
+        combo.connect("changed", changed); am.connect("toggled", changed); ao.connect("toggled", changed)
+        self.connect("key-press-event", lambda w, ev: Gdk.keyval_name(ev.keyval) == "Escape" and self.destroy())
+
+
+DBUS_XML = """<node>
+  <interface name="org.freedesktop.FileManager1">
+    <method name="ShowFolders"><arg type="as" name="URIs" direction="in"/><arg type="s" name="StartupId" direction="in"/></method>
+    <method name="ShowItems"><arg type="as" name="URIs" direction="in"/><arg type="s" name="StartupId" direction="in"/></method>
+    <method name="ShowItemProperties"><arg type="as" name="URIs" direction="in"/><arg type="s" name="StartupId" direction="in"/></method>
+  </interface>
+  <interface name="org.xfce.FileManager">
+    <method name="DisplayApplicationChooserDialog"><arg type="s" direction="in"/><arg type="b" direction="in"/><arg type="b" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="DisplayFolder"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="DisplayFolderAndSelect"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="DisplayFileProperties"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="Launch"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="Execute"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="DisplayPreferencesDialog"><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="CopyTo"><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="CopyInto"><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="MoveInto"><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="LinkInto"><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="UnlinkFiles"><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="LaunchFiles"><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="RenameFile"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="CreateFile"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="CreateFileFromTemplate"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+  </interface>
+  <interface name="org.xfce.Trash">
+    <method name="DisplayTrash"><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="EmptyTrash"><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="MoveToTrash"><arg type="as" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="QueryTrash"><arg type="b" name="full" direction="out"/></method>
+    <signal name="TrashChanged"/>
+  </interface>
+</node>"""
+
+
+def to_file(name, wd=""):
+    """A Gio.File from a URI, an absolute path or a path relative to wd."""
+    if "://" in name or name.startswith("trash:") or name.startswith("file:"):
+        return Gio.File.new_for_uri(name)
+    if not os.path.isabs(name) and wd:
+        wdf = to_file(wd)
+        return wdf.resolve_relative_path(name)
+    return Gio.File.new_for_path(name)
+
+
 class App(Gtk.Application):
+    """One process for all windows (they share the clipboard and Undo).
+    At login it runs as `mangos-finder --daemon`: no window, but it opens
+    USB sticks and drives when they are connected, and answers the desktop
+    and other apps (D-Bus: org.freedesktop.FileManager1, org.xfce.FileManager,
+    org.xfce.Trash) like the file manager it replaces did."""
     def __init__(self):
         super().__init__(application_id="org.mangos.Finder",
                          flags=Gio.ApplicationFlags.HANDLES_OPEN)
-        # one process for all windows: they share the clipboard and Undo
         self.clip = None          # ("copy"|"cut", [Gio.File])
         self.undo_stack = []      # [(label, records)]
+        self.ready = False
+        self.skip_activate = False
+        self.ops = None
+        self.add_main_option("daemon", 0, GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
+                             "Run in the background (started at login)", None)
+        self.add_main_option("preferences", 0, GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Show the settings", None)
+        self.add_main_option("connect", 0, GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Connect to Server", None)
+        self.add_main_option("select", 0, GLib.OptionFlags.NONE, GLib.OptionArg.STRING,
+                             "Open the folder of this file and select it", "FILE")
+        self.add_main_option("info", 0, GLib.OptionFlags.NONE, GLib.OptionArg.STRING, "Get Info of this file", "FILE")
+        for name, cb in (("preferences", lambda *_: self.show_prefs()),
+                         ("connect", lambda *_: self.new_window(None).connect_dialog())):
+            a = Gio.SimpleAction.new(name, None); a.connect("activate", cb); self.add_action(a)
+        for name, cb in (("select", lambda _a, v: self.show_items([v.get_string()])),
+                         ("info", lambda _a, v: self.show_properties([v.get_string()]))):
+            a = Gio.SimpleAction.new(name, GLib.VariantType.new("s")); a.connect("activate", cb); self.add_action(a)
+
+    def do_handle_local_options(self, opts):
+        d = opts.end().unpack()
+        if "daemon" in d:
+            self.register(None)
+            if self.get_is_remote():
+                return 0                          # already running
+            self.hold()
+            self.skip_activate = True
+            return -1
+        for name in ("preferences", "connect"):
+            if name in d:
+                self.register(None); self.activate_action(name, None); return 0
+        for name in ("select", "info"):
+            if name in d:
+                self.register(None)
+                uri = Gio.File.new_for_commandline_arg(d[name]).get_uri()
+                self.activate_action(name, GLib.Variant("s", uri)); return 0
+        return -1
 
     def setup(self):
+        if self.ready:
+            return
+        self.ready = True
         load_css()
         p = Gtk.CssProvider(); p.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    def do_activate(self):
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
         self.setup()
-        Finder(self, GLib.get_home_dir()).show_all()
+        self.own_names()
+        self.watch_drives()
+
+    def do_activate(self):
+        if self.skip_activate:
+            self.skip_activate = False
+            return
+        self.new_window(None)
 
     def do_open(self, files, n, hint):
-        self.setup()
         for f in files:
-            Finder(self, f).show_all()
+            self.new_window(f)
+
+    def new_window(self, where):
+        if where is None:
+            c = load_cfg().get("new_window", "home")
+            where = {"desktop": GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DESKTOP),
+                     "documents": GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS),
+                     "recents": "recent:///"}.get(c) or GLib.get_home_dir()
+        w = Finder(self, where)
+        w.show_all(); w.present()
+        return w
+
+    def show_prefs(self):
+        for w in self.get_windows():
+            if isinstance(w, Prefs):
+                w.present(); return
+        w = Prefs(); self.add_window(w); w.show_all()
+
+    def any_finder(self):
+        for w in self.get_windows():
+            if isinstance(w, Finder):
+                return w
+        return None
+
+    def show_items(self, uris):
+        """Open the folder of each item with the item selected (Show in Finder)."""
+        for u in uris:
+            f = to_file(u)
+            parent = f.get_parent()
+            if parent is None:
+                self.new_window(f); continue
+            w = self.new_window(parent)          # loads in the background: selected when shown
+            w.reselect = {f.get_uri()}
+
+    def show_properties(self, uris):
+        helper = self.any_finder() or self.helper_finder()
+        for u in uris:
+            InfoWindow(helper, to_file(u)).show_all()
+
+    def helper_finder(self):
+        """A Finder window kept hidden, for Get Info and dialogs asked by the desktop."""
+        if getattr(self, "hidden_finder", None) is None:
+            self.hidden_finder = Finder(self, GLib.get_home_dir())
+            self.hidden_finder.connect("delete-event", lambda w, *_: w.hide() or True)
+        return self.hidden_finder
+
+    def ops_window(self):
+        if self.ops is None:
+            self.ops = OpsWindow(self)
+        return self.ops
+
+    # ------------------------------------------------ USB sticks, drives, phones
+    def watch_drives(self):
+        """Mount what is connected (like the Mac), and show its files."""
+        self.vm = Gio.VolumeMonitor.get()
+        self.vm.connect("volume-added", self.on_volume_added)
+        self.vm.connect("mount-added", self.on_mount_added)
+        self.automounting = set()
+
+    def on_volume_added(self, vm, v):
+        c = load_cfg()
+        if not c.get("automount", True) or not v.should_automount() or not v.can_mount() or v.get_mount():
+            return
+        self.automounting.add(v.get_uuid() or v.get_name())
+
+        def done(vol, res):
+            try:
+                vol.mount_finish(res)
+            except GLib.Error:
+                return
+            m = vol.get_mount()
+            if m and load_cfg().get("autoopen", True):
+                self.new_window(m.get_default_location())
+        v.mount(Gio.MountMountFlags.NONE, Gtk.MountOperation.new(None), None, done)
+
+    def on_mount_added(self, vm, m):
+        # a phone or a camera mounted by GVFS itself (not one we mounted above)
+        v = m.get_volume()
+        key = (v.get_uuid() or v.get_name()) if v else None
+        if key in self.automounting:
+            self.automounting.discard(key); return
+        scheme = m.get_root().get_uri_scheme()
+        if scheme in ("mtp", "gphoto2", "afc") and load_cfg().get("autoopen", True) and load_cfg().get("automount", True):
+            self.new_window(m.get_default_location())
+
+    # ------------------------------------------------ D-Bus: the desktop and other apps
+    def own_names(self):
+        conn = self.get_dbus_connection()
+        if conn is None:
+            return
+        node = Gio.DBusNodeInfo.new_for_xml(DBUS_XML)
+        self.conn = conn
+        for path, ifaces in (("/org/freedesktop/FileManager1", ("org.freedesktop.FileManager1",)),
+                             ("/org/xfce/FileManager", ("org.xfce.FileManager", "org.xfce.Trash"))):
+            for name in ifaces:
+                try:
+                    conn.register_object(path, node.lookup_interface(name), self.on_call, None, None)
+                except GLib.Error:
+                    pass
+        flags = Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT | Gio.BusNameOwnerFlags.REPLACE
+        self.name_ids = [Gio.bus_own_name_on_connection(conn, n, flags, None, None)
+                         for n in ("org.freedesktop.FileManager1", "org.xfce.FileManager")]
+        # the desktop's Trash icon follows the Trash
+        try:
+            self.trash_mon = Gio.File.new_for_uri("trash:///").monitor_directory(Gio.FileMonitorFlags.NONE, None)
+            self.trash_mon.connect("changed", lambda *_: conn.emit_signal(
+                None, "/org/xfce/FileManager", "org.xfce.Trash", "TrashChanged", None))
+        except GLib.Error:
+            pass
+
+    def on_call(self, conn, sender, path, iface, method, params, inv):
+        a = params.unpack()
+        if method == "QueryTrash":
+            inv.return_value(self.dispatch(iface, method, a)); return
+        # answer at once (the desktop must not wait for our dialogs), then do it
+        inv.return_value(None)
+
+        def later():
+            try:
+                self.dispatch(iface, method, a)
+            except Exception as e:
+                print(f"mangos-finder: {method}: {e}", file=sys.stderr)
+            return False
+        GLib.idle_add(later)
+
+    def dispatch(self, iface, method, a):
+        ops = lambda: self.ops_window()
+        if iface == "org.freedesktop.FileManager1":
+            uris = a[0]
+            if method == "ShowFolders":
+                for u in uris:
+                    self.new_window(to_file(u))
+            elif method == "ShowItems":
+                self.show_items(uris)
+            elif method == "ShowItemProperties":
+                self.show_properties(uris)
+            return None
+        if iface == "org.xfce.Trash":
+            if method == "DisplayTrash":
+                self.new_window("trash:///")
+            elif method == "EmptyTrash":
+                if ops().yes_no(tr("Empty the Trash?", "Vuoi svuotare il Cestino?"),
+                                tr("Everything in the Trash will be deleted. You cannot undo this.",
+                                   "Tutti gli elementi nel Cestino verranno eliminati. Non si potrà annullare."),
+                                tr("Empty Trash", "Svuota il Cestino")):
+                    ops().run_job("empty_trash", [])
+            elif method == "MoveToTrash":
+                ops().run_job("trash", [to_file(x) for x in a[0]])
+            elif method == "QueryTrash":
+                try:
+                    info = Gio.File.new_for_uri("trash:///").query_info("trash::item-count", Gio.FileQueryInfoFlags.NONE, None)
+                    return GLib.Variant("(b)", (info.get_attribute_uint32("trash::item-count") > 0,))
+                except GLib.Error:
+                    return GLib.Variant("(b)", (False,))
+            return None
+        # org.xfce.FileManager
+        if method == "DisplayFolder":
+            self.new_window(to_file(a[0]))
+        elif method == "DisplayFolderAndSelect":
+            self.show_items([to_file(a[0]).get_child(a[1]).get_uri()])
+        elif method == "DisplayFileProperties":
+            self.show_properties([a[0]])
+        elif method == "Launch":
+            self.launch(to_file(a[0]))
+        elif method == "LaunchFiles":
+            for n in a[1]:
+                self.launch(to_file(n, a[0]))
+        elif method == "Execute":
+            wd, uri, files = a[0], a[1], a[2]
+            f = to_file(uri, wd)
+            p = f.get_path() or ""
+            if p.endswith(".desktop"):
+                ai = Gio.DesktopAppInfo.new_from_filename(p)
+                if ai:
+                    ai.launch([to_file(x, wd) for x in files], None)
+            elif p and os.access(p, os.X_OK):
+                subprocess.Popen([p] + [to_file(x, wd).get_path() or x for x in files], cwd=to_file(wd).get_path() if wd else None)
+            else:
+                self.launch(f)
+        elif method == "DisplayPreferencesDialog":
+            self.show_prefs()
+        elif method == "DisplayApplicationChooserDialog":
+            f = to_file(a[0])
+            self.helper_finder().choose_app([f], open_now=a[1], always=a[2])
+        elif method in ("CopyInto", "MoveInto", "LinkInto"):
+            wd, srcs, dest = a[0], a[1], a[2]
+            kind = {"CopyInto": "copy", "MoveInto": "move", "LinkInto": "link"}[method]
+            ops().run_job(kind, [to_file(x, wd) for x in srcs], to_file(dest, wd))
+        elif method == "CopyTo":
+            wd, srcs, tgts = a[0], a[1], a[2]
+            ops().run_job("copy_to", [to_file(x, wd) for x in srcs], None, targets=[to_file(x, wd) for x in tgts])
+        elif method == "UnlinkFiles":
+            files = [to_file(x, a[0]) for x in a[1]]
+            if files and ops().yes_no(tr("Delete immediately?", "Eliminare definitivamente?"),
+                                      tr("These items will be deleted. You cannot undo this.",
+                                         "Questi elementi verranno eliminati. Non si potrà annullare."),
+                                      tr("Delete", "Elimina")):
+                ops().run_job("delete", files)
+        elif method == "RenameFile":
+            ops().rename_dialog(to_file(a[0]))
+        elif method == "CreateFile":
+            parent, ctype = to_file(a[0]), a[1]
+            if ctype == "inode/directory":
+                ops().run_job("new_folder", [], parent)
+            else:
+                ops().run_job("new_file", [], parent, new_name=tr("untitled.txt", "Senza titolo.txt") if ctype.startswith("text/") or not ctype else tr("untitled", "Senza titolo"))
+        elif method == "CreateFileFromTemplate":
+            ops().run_job("new_file", [], to_file(a[0]), template=to_file(a[1]))
+        return None
+
+    def launch(self, f):
+        try:
+            if f.query_file_type(Gio.FileQueryInfoFlags.NONE, None) in (Gio.FileType.DIRECTORY, Gio.FileType.MOUNTABLE):
+                self.new_window(f); return
+        except GLib.Error:
+            pass
+        if (f.get_path() or "").endswith(".desktop"):
+            ai = Gio.DesktopAppInfo.new_from_filename(f.get_path())
+            if ai:
+                ai.launch([], None); return
+        Gio.AppInfo.launch_default_for_uri(f.get_uri(), None)
 
 
 if __name__ == "__main__":

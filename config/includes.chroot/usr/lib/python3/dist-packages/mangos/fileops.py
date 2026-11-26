@@ -1,5 +1,5 @@
 """File operations for Mango Finder: copy, move, Trash, rename, new folder,
-duplicate, empty Trash, with progress, cancel, conflicts and undo.
+new document, alias, compress (.zip), duplicate, empty Trash, with progress, cancel, conflicts and undo.
 
 Everything goes through GIO (the layer Thunar and GNOME Files use), so local
 disks, USB sticks, network shares and the Trash behave the same. Safety rules:
@@ -96,12 +96,14 @@ class Job:
     After run(): self.undo is a list describing how to undo what was done,
     self.created the top-level items made (to select them), self.errors."""
     def __init__(self, kind, sources, dest=None, progress=None, conflict=None, confirm=None, new_name=None,
-                 copy_word="copy", folder_word="untitled folder"):
+                 copy_word="copy", folder_word="untitled folder", template=None, targets=None):
         self.kind, self.sources, self.dest = kind, list(sources), dest
         self.progress = progress or (lambda *a: None)
         self.conflict_cb = conflict or (lambda s, d: ("keep", False))
         self.confirm = confirm or (lambda kind, files: False)
         self.new_name, self.copy_word, self.folder_word = new_name, copy_word, folder_word
+        self.template = template          # new_file: a Gio.File to start from (Templates folder)
+        self.targets = targets            # copy_to: the exact destination of each source
         self.cancellable = Gio.Cancellable()
         self.undo, self.created, self.errors = [], [], []
         self.total = self.done = 0
@@ -337,6 +339,101 @@ class Job:
         f.make_directory(self.cancellable)
         self.created.append(f)
         self.undo.append(("trash", f))
+
+    def do_new_file(self):
+        """An empty document, or a copy of a template (File > New Document)."""
+        name = unique_name(self.dest, self.new_name or (self.template.get_basename() if self.template else "untitled"))
+        f = self.dest.get_child(name)
+        if self.template is not None:
+            self.template.copy(f, Gio.FileCopyFlags.NONE, self.cancellable, None)
+        else:
+            f.create(Gio.FileCreateFlags.NONE, self.cancellable).close(None)
+        self.created.append(f)
+        self.undo.append(("trash", f))
+
+    def do_link(self):
+        """Aliases (symbolic links) to the sources, in dest."""
+        for s in self.sources:
+            self.check()
+            name = unique_name(self.dest, s.get_basename())
+            f = self.dest.get_child(name)
+            f.make_symbolic_link(s.get_path() or s.get_uri(), self.cancellable)
+            self.created.append(f)
+            self.undo.append(("trash", f))
+
+    def do_copy_to(self):
+        """Each source copied to its own exact destination (the desktop asks this)."""
+        self.total = sum(self.size_of(s) for s in self.sources)
+        for s, d in zip(self.sources, self.targets or []):
+            self.check()
+            if exists(d):
+                a = self.resolve(s, d)
+                if a == "skip":
+                    continue
+                if a == "keep":
+                    d = d.get_parent().get_child(unique_name(d.get_parent(), d.get_basename()))
+            else:
+                self.undo.append(("trash", d))
+            self.created.append(d)
+            self.copy_one(s, d)
+
+    def do_compress(self):
+        """A .zip of the sources next to them, like the Mac's Compress:
+        'name.ext.zip' for one item, 'Archive.zip' for several (new_name)."""
+        import zipfile
+        if not self.sources:
+            return
+        parent = self.dest or self.sources[0].get_parent()
+        if any(s.get_path() is None for s in self.sources) or parent.get_path() is None:
+            raise OpError("only files on this computer or on a drive can be compressed")
+        base = self.sources[0].get_basename() if len(self.sources) == 1 else (self.new_name or "Archive")
+        out = parent.get_child(unique_name(parent, base + ".zip"))
+        self.total = sum(self.size_of(s) for s in self.sources)
+        self.undo.append(("trash", out))
+        self.created.append(out)
+        try:
+            with zipfile.ZipFile(out.get_path(), "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+                for s in self.sources:
+                    root = s.get_path()
+                    top = os.path.dirname(root)
+                    if os.path.isdir(root) and not os.path.islink(root):
+                        for d, dirs, files in os.walk(root):
+                            self.check()
+                            dirs.sort(); files.sort()
+                            rel = os.path.relpath(d, top)
+                            if not files and not dirs:       # keep empty folders
+                                z.write(d, rel + "/")
+                            self.bump(1, os.path.basename(d))
+                            for n in files:
+                                self.check()
+                                p = os.path.join(d, n)
+                                if os.path.islink(p) or not os.path.isfile(p):
+                                    continue
+                                self.zip_file(z, p, os.path.join(rel, n))
+                    else:
+                        self.zip_file(z, root, os.path.basename(root))
+        except Cancelled:
+            try:
+                os.unlink(out.get_path())
+            except OSError:
+                pass
+            self.undo.remove(("trash", out)); self.created.remove(out)
+            raise
+        except OSError as e:
+            raise OpError(str(e))
+
+    def zip_file(self, z, path, arc):
+        import zipfile
+        zi = zipfile.ZipInfo.from_file(path, arc)
+        zi.compress_type = zipfile.ZIP_DEFLATED
+        with open(path, "rb") as src, z.open(zi, "w", force_zip64=True) as dst:
+            while True:
+                self.check()
+                buf = src.read(1 << 20)
+                if not buf:
+                    break
+                dst.write(buf)
+                self.bump(len(buf), os.path.basename(path))
 
     def do_duplicate(self):
         self.total = sum(self.size_of(s) for s in self.sources)

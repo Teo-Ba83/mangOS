@@ -5,7 +5,7 @@
 Type=Application
 Name=Desktop
 Name[it]=Scrivania
-Exec=thunar
+Exec=mangos-finder
 Icon=user-desktop
 NoDisplay=true
 StartupWMClass=Xfdesktop

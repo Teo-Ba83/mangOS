@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Icon=system-file-manager
+Type=X-XFCE-Helper
+Name=Mango Finder
+StartupNotify=true
+X-XFCE-Binaries=mangos-finder;
+X-XFCE-Category=FileManager
+X-XFCE-Commands=%B;
+X-XFCE-CommandsWithParameter=%B "%s";

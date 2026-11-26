@@ -100,6 +100,19 @@ if [ ! -e "$cfg/finder-mac" ]; then
   touch "$cfg/finder-mac"
 fi
 
+# Mango Finder is the file manager (0.3.x): the dock's Finder item opens it,
+# and it runs in the background (USB sticks, the desktop's file operations)
+# instead of Thunar's daemon, also for a session that still started Thunar.
+di=$HOME/.config/plank/dock1/launchers/thunar.dockitem
+if [ -f "$di" ] && grep -q '/thunar.desktop' "$di"; then
+  sed -i 's|/thunar.desktop|/mangos-finder.desktop|' "$di"
+fi
+if pgrep -u "$(id -u)" -f '^(/usr/bin/)?[Tt]hunar --daemon' >/dev/null 2>&1; then
+  thunar -q 2>/dev/null || true
+fi
+pgrep -u "$(id -u)" -f '^/usr/bin/python3 /usr/bin/mangos-finder --daemon' >/dev/null 2>&1 ||
+  (mangos-finder --daemon >/dev/null 2>&1 &)
+
 # The dock's Settings item now opens MangOS System Settings (gear icon).
 di=$HOME/.config/plank/dock1/launchers/xfce-settings-manager.dockitem
 if [ -f "$di" ] && grep -q 'xfce-settings-manager.desktop' "$di"; then

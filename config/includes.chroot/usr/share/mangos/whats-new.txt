@@ -6,6 +6,16 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-26 13:53
+en: Mango Finder is now the file manager: the Dock's Finder, folders on the desktop and "Show in folder" open it.
+it: Mango Finder ora è il gestore dei file: il Finder nel Dock, le cartelle sulla scrivania e "Mostra nella cartella" aprono lui.
+en: USB sticks, disks, phones and cameras open by themselves when you connect them; eject them with the button next to their name.
+it: Chiavette USB, dischi, telefoni e fotocamere si aprono da soli quando li colleghi; espellili con il pulsante accanto al nome.
+en: Network and Connect to Server (Ctrl+K): the shared folders of your other computers and of a NAS.
+it: Rete e Connetti al server (Ctrl+K): le cartelle condivise degli altri computer e di un NAS.
+en: Get Info (Ctrl+I), Open With, Compress, Extract Here, Make Alias, New Document from the Templates folder, Open in Terminal.
+it: Informazioni (Ctrl+I), Apri con, Comprimi, Estrai qui, Crea alias, Nuovo documento dalla cartella Modelli, Apri nel Terminale.
+
 ## 2026-11-26 00:45
 en: Mango Finder (beta) now works with your files: copy, cut and paste, drag and drop, Move to Trash, Rename, New Folder, Duplicate, Undo (Ctrl+Z), Put Back and Empty Trash, with a progress bar.
 it: Mango Finder (beta) ora lavora sui tuoi file: copia, taglia e incolla, trascinamento, Sposta nel Cestino, Rinomina, Nuova cartella, Duplica, Annulla (Ctrl+Z), Rimetti e Svuota il Cestino, con la barra di avanzamento.

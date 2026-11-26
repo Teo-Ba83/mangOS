@@ -172,6 +172,39 @@ j = run("copy", [f"{d}/u.txt"], OTHER)
 errs = fo.undo(j.undo)
 check("undo copy on a disk without Trash", not os.path.exists(f"{OTHER}/u.txt") and read(f"{d}/u.txt") == "U" and not errs, errs)
 
+# 16 new document: empty, from a template, names do not clash
+d = fresh("t16"); write(f"{d}/tpl/Lettera.txt", "Caro")
+j = run("new_file", [], d, new_name="Senza titolo.txt")
+j2 = run("new_file", [], d, new_name="Senza titolo.txt")
+j3 = fo.Job("new_file", [], F(d), template=F(f"{d}/tpl/Lettera.txt")).run()
+check("new empty document, second one numbered", os.path.getsize(f"{d}/Senza titolo.txt") == 0
+      and os.path.exists(f"{d}/Senza titolo 2.txt") and not j.errors, j.errors)
+check("new document from a template", read(f"{d}/Lettera.txt") == "Caro" and not j3.errors, j3.errors)
+fo.undo(j3.undo)
+check("undo new document", not os.path.exists(f"{d}/Lettera.txt"))
+
+# 17 alias (symbolic link)
+d = fresh("t17"); write(f"{d}/orig.txt", "O"); os.makedirs(f"{d}/to")
+j = run("link", [f"{d}/orig.txt"], f"{d}/to")
+check("make alias", os.path.islink(f"{d}/to/orig.txt") and read(f"{d}/to/orig.txt") == "O", j.errors)
+
+# 18 copy_to: exact destinations (the desktop's CopyTo)
+d = fresh("t18"); write(f"{d}/a.txt", "A")
+j = fo.Job("copy_to", [F(f"{d}/a.txt")], targets=[F(f"{d}/b.txt")]).run()
+check("copy to an exact name", read(f"{d}/b.txt") == "A" and not j.errors, j.errors)
+
+# 19 compress (like the Mac): one item -> doc.txt.zip, several -> Archive.zip, contents complete
+import zipfile
+d = fresh("t19"); write(f"{d}/doc.txt", "D" * 5000); write(f"{d}/dir/x/y.txt", "Y"); os.makedirs(f"{d}/dir/empty")
+j = run("compress", [f"{d}/doc.txt"])
+check("compress one file -> doc.txt.zip", zipfile.ZipFile(f"{d}/doc.txt.zip").read("doc.txt") == b"D" * 5000, j.errors)
+j = run("compress", [f"{d}/doc.txt", f"{d}/dir"], new_name="Archivio")
+names = set(zipfile.ZipFile(f"{d}/Archivio.zip").namelist())
+check("compress several -> Archivio.zip with folders", {"doc.txt", "dir/x/y.txt", "dir/empty/"} <= names, names)
+j = run("compress", [f"{d}/doc.txt"])
+check("compress again -> doc.txt 2.zip", os.path.exists(f"{d}/doc.txt 2.zip"), j.errors)
+check("compress progress reached the total", j.done >= j.total > 0, (j.done, j.total))
+
 shutil.rmtree(BASE, ignore_errors=True); shutil.rmtree(OTHER, ignore_errors=True)
 ok = sum(1 for _, r in results if r)
 print(f"\n{ok}/{len(results)} passed")
