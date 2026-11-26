@@ -103,9 +103,21 @@ fi
 # Mango Finder is the file manager (0.3.x): the dock's Finder item opens it,
 # and it runs in the background (USB sticks, the desktop's file operations)
 # instead of Thunar's daemon, also for a session that still started Thunar.
-di=$HOME/.config/plank/dock1/launchers/thunar.dockitem
-if [ -f "$di" ] && grep -q '/thunar.desktop' "$di"; then
-  sed -i 's|/thunar.desktop|/mangos-finder.desktop|' "$di"
+# The dock item itself is now mangos-finder.dockitem (0.4): Thunar's item
+# becomes Mango Finder's, in the same place.
+l=$HOME/.config/plank/dock1/launchers
+if [ -f "$l/thunar.dockitem" ]; then
+  printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/mangos-finder.desktop\n' > "$l/mangos-finder.dockitem"
+  items=$(dconf read /net/launchpad/plank/docks/dock1/dock-items 2>/dev/null || true)
+  case "$items" in
+    *"'thunar.dockitem'"*)
+      case "$items" in
+        *"'mangos-finder.dockitem'"*) new=$(echo "$items" | sed "s/'thunar.dockitem', //; s/, 'thunar.dockitem'//") ;;
+        *) new=$(echo "$items" | sed "s/'thunar.dockitem'/'mangos-finder.dockitem'/") ;;
+      esac
+      dconf write /net/launchpad/plank/docks/dock1/dock-items "$new" ;;
+  esac
+  rm -f "$l/thunar.dockitem"
 fi
 if pgrep -u "$(id -u)" -f '^(/usr/bin/)?[Tt]hunar --daemon' >/dev/null 2>&1; then
   thunar -q 2>/dev/null || true

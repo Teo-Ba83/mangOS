@@ -126,7 +126,8 @@ dock() {
   printf '[PlankDockItemPreferences]\nLauncher=file://%s/%s.desktop\n' "$APPS" "$2" > "$L/$1.dockitem"
 }
 dock mangos-launchpad      mangos-launchpad
-dock thunar                mangos-finder   # same item name: dock order kept
+dock mangos-finder         mangos-finder
+rm -f "$L/thunar.dockitem"       # Mango Finder replaced Thunar in the dock (0.4)
 dock firefox-esr           firefox-esr
 dock vlc                   vlc
 dock mangos-store          mangos-store
