@@ -6,6 +6,10 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-26 19:12
+en: MangOS 0.4: Mango Finder is the file manager (Icons, List, Columns, Gallery; USB sticks, phones and network; Get Info, Open With, Compress), and it is in the Dock.
+it: MangOS 0.4: Mango Finder è il gestore dei file (Icone, Elenco, Colonne, Galleria; chiavette, telefoni e rete; Informazioni, Apri con, Comprimi), ed è nel Dock.
+
 ## 2026-11-26 13:53
 en: Mango Finder is now the file manager: the Dock's Finder, folders on the desktop and "Show in folder" open it.
 it: Mango Finder ora è il gestore dei file: il Finder nel Dock, le cartelle sulla scrivania e "Mostra nella cartella" aprono lui.
