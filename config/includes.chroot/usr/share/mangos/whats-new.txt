@@ -6,6 +6,10 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-26 00:19
+en: Mango Finder (beta): Columns view (each folder in a new column, with a preview of the selected file) and Gallery view (a large preview with thumbnails below). Ctrl+1, 2, 3, 4 switch views.
+it: Mango Finder (beta): vista Colonne (ogni cartella in una nuova colonna, con l'anteprima del file selezionato) e vista Galleria (anteprima grande con le miniature sotto). Ctrl+1, 2, 3, 4 cambiano vista.
+
 ## 2026-11-26 00:10
 en: Software Update no longer gives up while the Mango Store is installing an app: it waits for it to finish and says so.
 it: Aggiornamento software non si arrende più se il Mango Store sta installando un'app: aspetta che finisca e lo dice.

@@ -250,8 +250,9 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
   manager for the Dock, the desktop and "Open folder" until Mango Finder is
   complete. Stage 1 is **read-only**: it never copies, moves, renames or
   deletes; "Open in Thunar" (right click) is there for that.
-- Coming in later stages: Columns and Gallery views, copy / move / paste /
-  drag and drop / Trash with progress, Get Info, tags, drives' eject button.
+- Views: Icons, List, Columns, Gallery (Ctrl+1..4). Coming in later stages:
+  copy / move / paste / drag and drop / Trash with progress, Get Info, tags,
+  drives' eject button.
 - Large folders: 3,000 files take about 1.6 s on a modern PC; expect several
   seconds on a 2008 Core 2 Duo (the count is shown while loading).
 

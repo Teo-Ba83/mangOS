@@ -6,9 +6,11 @@ usage: mangos-finder [FOLDER or URI]
 Stage 1 (read-only: it never changes, moves or deletes a file):
   - sidebar: Favourites (Recents, Desktop, Documents, Downloads, Pictures,
     Music, Videos, Home), Locations (drives and USB sticks, Trash)
-  - views: Icons (thumbnails for photos, videos, PDFs through Tumbler) and
-    List (folders open in place with a triangle; Name, Date Modified, Size,
-    Kind); Ctrl+1 / Ctrl+2 like Cmd+1 / Cmd+2
+  - views (Ctrl+1..4 like Cmd+1..4): Icons (thumbnails for photos, videos,
+    PDFs through Tumbler); List (folders open in place with a triangle;
+    Name, Date Modified, Size, Kind); Columns (each folder opens in a new
+    column, the last one previews the selected file); Gallery (a large
+    preview with a strip of thumbnails below)
   - sort by name, date, size or kind, ascending or descending, folders first
   - search in the folder, show hidden files (Ctrl+Shift+.)
   - back / forward (Ctrl+[ / Ctrl+]), enclosing folder (Ctrl+Up), open
@@ -17,7 +19,7 @@ Stage 1 (read-only: it never changes, moves or deletes a file):
 Files are read through GIO/GVFS (the same layer Thunar uses), so drives,
 Trash and network places work the same. Thunar stays the default file
 manager; this is a separate app until it is complete."""
-import json, os, subprocess, sys, time, urllib.parse
+import functools, json, os, subprocess, sys, time, urllib.parse
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
@@ -35,12 +37,23 @@ CSS = b"""
 .fd-side { background: alpha(currentColor, .045); }
 .fd-side list { background: transparent; }
 .fd-side row { padding: 4px 10px; border-radius: 7px; margin: 0 8px; }
-.fd-side row:selected { background: alpha(currentColor, .14); color: @theme_fg_color; }
+.fd-side row.fd-current { background: alpha(currentColor, .14); color: @theme_fg_color; }
 .fd-side-head { font-size: 11px; font-weight: 700; opacity: .5; margin: 12px 18px 3px 18px; }
 .fd-status { font-size: 11px; opacity: .65; padding: 3px 10px; border-top: 1px solid alpha(currentColor, .1); }
 .fd-path button { padding: 0 4px; min-height: 18px; font-size: 11px; border: none; box-shadow: none; background: transparent; }
 .fd-empty { opacity: .5; font-size: 14px; }
 iconview.fd-icons { background: @theme_base_color; }
+.fd-col { border-right: 1px solid alpha(currentColor, .1); background: @theme_base_color; }
+.fd-col treeview { background: @theme_base_color; }
+.fd-col treeview:selected { background: #0A84FF; color: white; }
+.fd-arrow { opacity: .45; }
+.fd-prev { background: @theme_base_color; }
+.fd-prev-name { font-weight: 700; font-size: 14px; }
+.fd-prev-key { opacity: .55; font-size: 12px; }
+.fd-gallery-top { background: @theme_base_color; }
+.fd-strip { background: alpha(currentColor, .04); border-top: 1px solid alpha(currentColor, .1); }
+iconview.fd-strip-view { background: transparent; }
+iconview.fd-strip-view:selected { background: alpha(#0A84FF, .25); border-radius: 6px; }
 iconview.fd-icons:selected { background: alpha(#0A84FF, .18); color: @theme_fg_color; border-radius: 6px; }
 """
 
@@ -152,7 +165,9 @@ class Finder(Gtk.ApplicationWindow):
         self.view_btns = {}
         group = None
         for key, icon, tip in (("icons", "view-grid-symbolic", tr("as Icons (Ctrl+1)", "come Icone (Ctrl+1)")),
-                               ("list", "view-list-symbolic", tr("as List (Ctrl+2)", "come Elenco (Ctrl+2)"))):
+                               ("list", "view-list-symbolic", tr("as List (Ctrl+2)", "come Elenco (Ctrl+2)")),
+                               ("columns", "view-column-symbolic", tr("as Columns (Ctrl+3)", "come Colonne (Ctrl+3)")),
+                               ("gallery", "view-coverflow-symbolic", tr("as Gallery (Ctrl+4)", "come Galleria (Ctrl+4)"))):
             b = Gtk.RadioButton.new_from_widget(group); group = group or b
             b.set_mode(False); b.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
             b.set_tooltip_text(tip)
@@ -212,6 +227,10 @@ class Finder(Gtk.ApplicationWindow):
         self.listview.connect("button-press-event", self.on_button)
         lsw = Gtk.ScrolledWindow(); lsw.add(self.listview)
         self.stack.add_named(lsw, "list")
+        self.columns = ColumnsView(self)
+        self.stack.add_named(self.columns, "columns")
+        self.gallery = GalleryView(self)
+        self.stack.add_named(self.gallery, "gallery")
         self.empty = Gtk.Label(); self.empty.get_style_context().add_class("fd-empty")
         self.stack.add_named(self.empty, "empty")
         right.pack_start(self.stack, True, True, 0)
@@ -281,9 +300,12 @@ class Finder(Gtk.ApplicationWindow):
     def side_section(self, title, items):
         h = Gtk.Label(label=title, xalign=0); h.get_style_context().add_class("fd-side-head")
         self.side.pack_start(h, False, False, 0)
-        lb = Gtk.ListBox(); lb.connect("row-activated", self.on_side)
+        # no GTK selection (it picked rows by itself); the current place is marked by mark_sidebar
+        lb = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE); lb.connect("row-activated", self.on_side)
         for name, target, icon in items:
-            row = Gtk.ListBoxRow(); row.target = target
+            # not focusable: otherwise the first row takes the keyboard focus
+            # when the window opens and stays highlighted wherever you are
+            row = Gtk.ListBoxRow(can_focus=False); row.target = target
             b = Gtk.Box(spacing=8)
             img = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU)
             img.get_style_context().add_class("dim-label")
@@ -310,10 +332,9 @@ class Finder(Gtk.ApplicationWindow):
     def mark_sidebar(self):
         uri = self.folder.get_uri().rstrip("/")
         for lb in [c for c in self.side.get_children() if isinstance(c, Gtk.ListBox)]:
-            lb.unselect_all()
             for row in lb.get_children():
-                if isinstance(row.target, str) and row.target.rstrip("/") == uri:
-                    lb.select_row(row)
+                here = isinstance(row.target, str) and row.target.rstrip("/") == uri
+                (row.get_style_context().add_class if here else row.get_style_context().remove_class)("fd-current")
 
     # ---------------------------------------------------------- navigation
     def open_location(self, where, record=True):
@@ -464,7 +485,16 @@ class Finder(Gtk.ApplicationWindow):
             self.show_empty(tr("This folder is empty", "Questa cartella è vuota"))
         else:
             self.stack.set_visible_child_name(self.cfg["view"])
+            self.refresh_special_view()
+            if not self.search.has_focus():       # arrows move among the files, like the Mac
+                GLib.idle_add(lambda: self.grab_view() or False)
         self.update_status()
+
+    def refresh_special_view(self):
+        if self.cfg["view"] == "columns":
+            self.columns.show(self.folder)
+        elif self.cfg["view"] == "gallery":
+            self.gallery.refresh()
 
     def show_empty(self, text):
         self.empty.set_text(text)
@@ -555,6 +585,9 @@ class Finder(Gtk.ApplicationWindow):
         ra, rb = model[a], model[b]
         if ra[C_FILE] is None or rb[C_FILE] is None:
             return 0
+        return self.cmp_rows(ra, rb)
+
+    def cmp_rows(self, ra, rb):
         if ra[C_ISDIR] != rb[C_ISDIR]:                 # folders first, whatever the order
             return -1 if ra[C_ISDIR] else 1
         k = self.cfg["sort"]
@@ -576,6 +609,8 @@ class Finder(Gtk.ApplicationWindow):
             m.set_default_sort_func(self.compare)
             m.set_sort_column_id(Gtk.TREE_SORTABLE_DEFAULT_SORT_COLUMN_ID, Gtk.SortType.ASCENDING)
         save_cfg(self.cfg)
+        if self.folder is not None and self.cfg["view"] == "columns":
+            self.columns.resort()
 
     def header_sort(self, key):
         if self.cfg["sort"] == key:
@@ -664,6 +699,7 @@ class Finder(Gtk.ApplicationWindow):
         self.listview.set_model(self.tree_sorted)
         if self.stack.get_visible_child_name() == "empty" and q:
             self.stack.set_visible_child_name(self.cfg["view"])
+        self.refresh_special_view()
         self.update_status()
 
     def set_view(self, key):
@@ -673,6 +709,8 @@ class Finder(Gtk.ApplicationWindow):
         if self.view_btns[key].get_active() is False:
             self.view_btns[key].set_active(True)
         self.resort()
+        if self.folder is not None and self.stack.get_visible_child_name() != "empty":
+            self.refresh_special_view()
 
     # ---------------------------------------------------------- path bar, selection, menus
     def fill_pathbar(self):
@@ -694,6 +732,10 @@ class Finder(Gtk.ApplicationWindow):
     def selected(self):
         """[(Gio.File, is_dir)] of the selection in the current view."""
         out = []
+        if self.cfg["view"] == "columns":
+            return self.columns.selected()
+        if self.cfg["view"] == "gallery":
+            return self.gallery.selected()
         if self.cfg["view"] == "icons":
             for p in self.iconview.get_selected_items():
                 out.append((self.sorted[p][C_FILE], self.sorted[p][C_ISDIR]))
@@ -712,7 +754,7 @@ class Finder(Gtk.ApplicationWindow):
     def on_button(self, w, ev):
         if ev.button != 3:
             return False
-        if w is self.iconview:
+        if isinstance(w, Gtk.IconView):
             p = w.get_path_at_pos(int(ev.x), int(ev.y))
             if p is not None and not w.path_is_selected(p):
                 w.unselect_all(); w.select_path(p)
@@ -771,8 +813,8 @@ class Finder(Gtk.ApplicationWindow):
                 self.search.set_text(""); self.grab_view()
                 return True
             return False
-        if ctrl and k in ("1", "2"):
-            self.view_btns["icons" if k == "1" else "list"].set_active(True); return True
+        if ctrl and k in ("1", "2", "3", "4"):
+            self.view_btns[("icons", "list", "columns", "gallery")[int(k) - 1]].set_active(True); return True
         if ctrl and k in ("bracketleft",):
             self.go_back(); return True
         if ctrl and k in ("bracketright",):
@@ -798,13 +840,287 @@ class Finder(Gtk.ApplicationWindow):
         return False
 
     def grab_view(self):
-        (self.iconview if self.cfg["view"] == "icons" else self.listview).grab_focus()
+        {"icons": self.iconview, "list": self.listview, "columns": self.columns,
+         "gallery": self.gallery}[self.cfg["view"]].grab_focus()
+
+    # ---------------------------------------------------------- one folder as a sorted list (Columns view)
+    def list_folder(self, folder, cb, apply_search=False):
+        """Reads a folder in the background; cb(rows) with value lists, sorted, hidden files filtered."""
+        rows = []
+        q = self.search.get_text().strip().lower() if apply_search else ""
+
+        def batch(en, res):
+            try:
+                infos = en.next_files_finish(res)
+            except GLib.Error:
+                infos = []
+            for info in infos:
+                vals, hidden, ctype = self.row_values(folder, info)
+                if hidden and not self.cfg["hidden"]:
+                    continue
+                if q and q not in vals[C_NAME].lower():
+                    continue
+                vals.append(ctype)
+                rows.append(vals)
+            if infos:
+                en.next_files_async(BATCH, GLib.PRIORITY_DEFAULT, None, batch)
+                return
+            en.close_async(GLib.PRIORITY_LOW, None, None)
+            rows.sort(key=functools.cmp_to_key(self.cmp_rows))
+            cb(rows)
+
+        def opened(src, res):
+            try:
+                en = src.enumerate_children_finish(res)
+            except GLib.Error as e:
+                cb(None, e.message)
+                return
+            en.next_files_async(BATCH, GLib.PRIORITY_DEFAULT, None, batch)
+        folder.enumerate_children_async(ATTRS, Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, None, opened)
+
+    # ---------------------------------------------------------- preview (Columns and Gallery)
+    def preview_widget(self, f, is_dir, max_w, max_h, holder=None):
+        """A large image of the file (the picture itself for photos, else its
+        thumbnail or icon) and its name, kind, size and dates."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=14, valign=Gtk.Align.CENTER)
+        img = Gtk.Image()
+        box.pack_start(img, False, False, 0)
+        try:
+            info = f.query_info(ATTRS + ",time::created", Gio.FileQueryInfoFlags.NONE, None)
+        except GLib.Error:
+            info = None
+        ctype = info.get_content_type() if info else ""
+        side = min(max_w, max_h)
+        if info:
+            img.set_from_pixbuf(self.icon_for(info, min(256, max(64, side // 2)), f, ctype or ""))
+        if ctype.startswith("image/") and f.get_uri_scheme() == "file":
+            # the photo itself, read in the background so the window never waits
+            def done(_src, res):
+                try:
+                    pb = GdkPixbuf.Pixbuf.new_from_stream_finish(res)
+                except GLib.Error:
+                    return
+                img.set_from_pixbuf(pb)
+            try:
+                stream = f.read(None)
+                GdkPixbuf.Pixbuf.new_from_stream_at_scale_async(stream, max_w, max_h, True, None, done)
+            except GLib.Error:
+                pass
+        name = Gtk.Label(label=info.get_display_name() if info else f.get_basename(), wrap=True,
+                         justify=Gtk.Justification.CENTER, max_width_chars=34)
+        name.get_style_context().add_class("fd-prev-name")
+        box.pack_start(name, False, False, 4)
+        if info:
+            kind = tr("Folder", "Cartella") if is_dir else self.describe(ctype or "")
+            grid = Gtk.Grid(column_spacing=10, row_spacing=3, halign=Gtk.Align.CENTER)
+            facts = [(tr("Kind", "Tipo"), kind)]
+            if not is_dir:
+                facts.append((tr("Size", "Dimensione"), human_size(info.get_size())))
+            cdt = info.get_creation_date_time() if hasattr(info, "get_creation_date_time") else None
+            if cdt:
+                facts.append((tr("Created", "Creato"), nice_date(cdt.to_unix())))
+            mdt = info.get_modification_date_time()
+            if mdt:
+                facts.append((tr("Modified", "Modificato"), nice_date(mdt.to_unix())))
+            for i, (k, v) in enumerate(facts):
+                a = Gtk.Label(label=k, xalign=1); a.get_style_context().add_class("fd-prev-key")
+                b = Gtk.Label(label=v, xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=26)
+                grid.attach(a, 0, i, 1, 1); grid.attach(b, 1, i, 1, 1)
+            box.pack_start(grid, False, False, 0)
+        box.show_all()
+        return box
 
     def on_close(self, *_):
         w, h = self.get_size()
         self.cfg["w"], self.cfg["h"] = w, h
         save_cfg(self.cfg)
         return False
+
+
+class ColumnsView(Gtk.ScrolledWindow):
+    """The Mac's column view: a folder per column, from left to right; the
+    last column previews the selected file."""
+    COL_W = 230
+
+    def __init__(self, finder):
+        super().__init__(vscrollbar_policy=Gtk.PolicyType.NEVER, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+        self.f = finder
+        self.box = Gtk.Box()
+        self.add(self.box)
+        self.cols = []            # [(folder, treeview, store)]
+        self.token = 0
+        self.set_can_focus(False)
+
+    def grab_focus(self):
+        if self.cols:
+            self.cols[-1][1].grab_focus()
+
+    def show(self, folder):
+        self.token += 1
+        for c in self.box.get_children():
+            c.destroy()
+        self.cols = []
+        self.add_column(folder, first=True)
+
+    def resort(self):
+        path = [c[0] for c in self.cols]
+        if path:
+            self.show(path[0])
+
+    def truncate(self, i):
+        """Removes the columns (and preview) after column i."""
+        kids = self.box.get_children()
+        for w in kids[i + 1:]:
+            w.destroy()
+        self.cols = self.cols[:i + 1]
+        if self.cols:                       # the window is named after the deepest folder shown
+            self.f.set_title(self.f.display_name(self.cols[-1][0])); self.f.hb.set_title(self.f.get_title())
+
+    def add_column(self, folder, first=False):
+        store = Gtk.ListStore(str, GdkPixbuf.Pixbuf, object, bool, str)
+        tv = Gtk.TreeView(model=store, headers_visible=False, enable_search=True, search_column=0)
+        col = Gtk.TreeViewColumn()
+        pr = Gtk.CellRendererPixbuf(); col.pack_start(pr, False); col.add_attribute(pr, "pixbuf", 1)
+        tx = Gtk.CellRendererText(ellipsize=Pango.EllipsizeMode.END); col.pack_start(tx, True); col.add_attribute(tx, "text", 0)
+        ar = Gtk.CellRendererText(xalign=1, foreground="#8e8e93"); col.pack_end(ar, False); col.add_attribute(ar, "text", 4)
+        col.set_expand(True)
+        tv.append_column(col)
+        sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        sw.set_size_request(self.COL_W, -1); sw.add(tv)
+        sw.get_style_context().add_class("fd-col")
+        self.box.pack_start(sw, False, False, 0)
+        index = len(self.cols)
+        self.cols.append((folder, tv, store))
+        tv.get_selection().connect("changed", lambda sel, i=index: self.on_select(i, sel))
+        tv.connect("row-activated", lambda v, path, c, st=store: self.f.activate(st[path][2], st[path][3])
+                   if not st[path][3] else None)
+        tv.connect("key-press-event", lambda v, ev, i=index: self.on_key(i, ev))
+        tv.connect("button-press-event", self.f.on_button)
+        sw.show_all()
+        token = self.token
+
+        def filled(rows, error=None):
+            if token != self.token:
+                return
+            if rows is None:
+                store.append([error or "", None, None, False, ""])
+                return
+            for r in rows:
+                store.append([r[C_NAME], r[C_SMALL], r[C_FILE], r[C_ISDIR], "›" if r[C_ISDIR] else ""])
+            if first and len(store):
+                tv.grab_focus()
+        self.f.list_folder(folder, filled, apply_search=first)
+        GLib.idle_add(self.scroll_end)
+        self.f.set_title(self.f.display_name(folder)); self.f.hb.set_title(self.f.get_title())
+
+    def scroll_end(self):
+        adj = self.get_hadjustment()
+        adj.set_value(adj.get_upper() - adj.get_page_size())
+        return False
+
+    def on_select(self, i, sel):
+        if i >= len(self.cols):
+            return
+        model, it = sel.get_selected()
+        self.truncate(i)
+        if it is None or model[it][2] is None:
+            return
+        f, is_dir = model[it][2], model[it][3]
+        if is_dir:
+            self.add_column(f)
+        else:
+            prev = self.f.preview_widget(f, False, 260, 260)
+            frame = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+            frame.set_size_request(300, -1); frame.add(prev)
+            frame.get_style_context().add_class("fd-prev")
+            self.box.pack_start(frame, False, False, 0); frame.show_all()
+            GLib.idle_add(self.scroll_end)
+
+    def on_key(self, i, ev):
+        k = Gdk.keyval_name(ev.keyval) or ""
+        if k == "Right" and i + 1 < len(self.cols):
+            nxt = self.cols[i + 1][1]
+            if len(nxt.get_model()):
+                nxt.grab_focus(); nxt.set_cursor(Gtk.TreePath.new_first(), None, False)
+            return True
+        if k == "Left" and i > 0:
+            prev = self.cols[i - 1][1]
+            prev.grab_focus()
+            return True
+        return False
+
+    def selected(self):
+        for folder, tv, store in reversed(self.cols):
+            model, it = tv.get_selection().get_selected()
+            if it is not None and model[it][2] is not None:
+                return [(model[it][2], model[it][3])]
+        return []
+
+
+class GalleryView(Gtk.Box):
+    """The Mac's gallery view: a large preview of the selected item, with a
+    strip of thumbnails to scroll below it."""
+    def __init__(self, finder):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.f = finder
+        self.top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.top.get_style_context().add_class("fd-gallery-top")
+        self.pack_start(self.top, True, True, 0)
+        self.strip = Gtk.IconView(pixbuf_column=C_ICON, item_width=72, margin=6, column_spacing=4,
+                                  selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=False)
+        self.strip.get_style_context().add_class("fd-strip-view")
+        self.strip.set_tooltip_column(C_NAME)
+        self.strip.connect("selection-changed", lambda *_: self.on_select())
+        self.strip.connect("item-activated", lambda v, path: self.f.activate(v.get_model()[path][C_FILE],
+                                                                              v.get_model()[path][C_ISDIR]))
+        self.strip.connect("button-press-event", self.f.on_button)
+        sw = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER)
+        sw.set_size_request(-1, 112); sw.add(self.strip)
+        sw.get_style_context().add_class("fd-strip")
+        self.pack_start(sw, False, False, 0)
+        self.pending = None
+
+    def grab_focus(self):
+        self.strip.grab_focus()
+
+    def refresh(self):
+        model = self.f.sorted
+        self.strip.set_model(model)
+        self.strip.set_columns(max(1, len(model)))      # one row, scrolled sideways
+        if len(model):
+            first = Gtk.TreePath.new_first()
+            self.strip.select_path(first); self.strip.set_cursor(first, None, False)
+        else:
+            self.show_preview(None)
+
+    def on_select(self):
+        items = self.strip.get_selected_items()
+        if not items:
+            return
+        row = self.strip.get_model()[items[0]]
+        self.strip.scroll_to_path(items[0], True, 0.5, 0.5)
+        # wait a moment while arrows are held down, then draw the large preview
+        if self.pending:
+            GLib.source_remove(self.pending)
+        self.pending = GLib.timeout_add(120, self.show_preview, (row[C_FILE], row[C_ISDIR]))
+
+    def show_preview(self, item):
+        self.pending = None
+        for c in self.top.get_children():
+            c.destroy()
+        if item is None:
+            return False
+        alloc = self.top.get_allocation()
+        w, h = max(240, alloc.width - 60), max(180, alloc.height - 120)
+        self.top.pack_start(self.f.preview_widget(item[0], item[1], w, h), True, True, 0)
+        return False
+
+    def selected(self):
+        items = self.strip.get_selected_items()
+        if not items:
+            return []
+        row = self.strip.get_model()[items[0]]
+        return [(row[C_FILE], row[C_ISDIR])]
 
 
 class App(Gtk.Application):
