@@ -3,7 +3,7 @@
 
 usage: mangos-finder [FOLDER or URI]
 
-Stage 1 (read-only: it never changes, moves or deletes a file):
+Stages 1-3:
   - sidebar: Favourites (Recents, Desktop, Documents, Downloads, Pictures,
     Music, Videos, Home), Locations (drives and USB sticks, Trash)
   - views (Ctrl+1..4 like Cmd+1..4): Icons (thumbnails for photos, videos,
@@ -16,15 +16,22 @@ Stage 1 (read-only: it never changes, moves or deletes a file):
   - back / forward (Ctrl+[ / Ctrl+]), enclosing folder (Ctrl+Up), open
     (double click, Enter, Ctrl+Down), Quick Look (Space), Open in Thunar,
     Copy Path, path bar at the bottom
-Files are read through GIO/GVFS (the same layer Thunar uses), so drives,
-Trash and network places work the same. Thunar stays the default file
-manager; this is a separate app until it is complete."""
-import functools, json, os, subprocess, sys, time, urllib.parse
+  - copy / cut / paste (Ctrl+C / X / V; Ctrl+Alt+V moves, like Cmd+Option+V),
+    drag and drop (same disk: move, another disk or Ctrl: copy), Move to
+    Trash (Delete or Ctrl+Backspace), Rename (F2), New Folder (Ctrl+Shift+N),
+    Duplicate (Ctrl+D), Undo (Ctrl+Z); in the Trash: Put Back, Delete
+    Immediately, Empty Trash; progress bar with Stop; asks before replacing
+    (mangos.fileops does the work and has its own tests)
+Files go through GIO/GVFS (the same layer Thunar uses), so drives, Trash
+and network places work the same. Thunar stays the default file manager
+until Mango Finder is complete."""
+import functools, json, os, subprocess, sys, threading, time, urllib.parse
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk, Pango
 from mangos import tr, load_css
+from mangos import fileops
 
 CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mangos", "finder.json")
 ATTRS = ("standard::name,standard::display-name,standard::type,standard::icon,standard::size,"
@@ -235,6 +242,30 @@ class Finder(Gtk.ApplicationWindow):
         self.stack.add_named(self.empty, "empty")
         right.pack_start(self.stack, True, True, 0)
 
+        # Trash: Empty Trash bar
+        self.trash_bar = Gtk.Box(spacing=8, margin=6)
+        tl = Gtk.Label(label=tr("Trash", "Cestino"), xalign=0); tl.get_style_context().add_class("fd-prev-name")
+        self.trash_bar.pack_start(tl, True, True, 6)
+        eb = Gtk.Button(label=tr("Empty", "Svuota")); eb.connect("clicked", lambda *_: self.empty_trash())
+        self.trash_bar.pack_end(eb, False, False, 0)
+        right.pack_start(self.trash_bar, False, False, 0); right.reorder_child(self.trash_bar, 0)
+        self.trash_bar.set_no_show_all(True)      # shown only in the Trash (show_all must not show it)
+        for c in self.trash_bar.get_children():
+            c.show()
+        # copy / move progress
+        self.prog_rev = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_UP)
+        pb = Gtk.Box(spacing=10, margin=8); pb.get_style_context().add_class("fd-progress")
+        self.prog_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
+        self.prog_bar = Gtk.ProgressBar(valign=Gtk.Align.CENTER)
+        stop = Gtk.Button.new_from_icon_name("process-stop-symbolic", Gtk.IconSize.BUTTON)
+        stop.set_tooltip_text(tr("Stop", "Interrompi")); stop.connect("clicked", lambda *_: self.stop_jobs())
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        col.pack_start(self.prog_label, False, False, 0); col.pack_start(self.prog_bar, False, False, 0)
+        pb.pack_start(col, True, True, 0); pb.pack_end(stop, False, False, 0)
+        self.prog_rev.add(pb)
+        right.pack_start(self.prog_rev, False, False, 0)
+        self.jobs = []
+
         self.pathbar = Gtk.Box(spacing=0); self.pathbar.get_style_context().add_class("fd-path")
         right.pack_start(self.pathbar, False, False, 0)
         self.status = Gtk.Label(xalign=0.5); self.status.get_style_context().add_class("fd-status")
@@ -244,6 +275,9 @@ class Finder(Gtk.ApplicationWindow):
         self.connect("delete-event", self.on_close)
         self.view_btns[self.cfg["view"]].set_active(True)
         self.set_view(self.cfg["view"])
+        self.reselect = set()
+        self.monitor = None
+        self.setup_dnd()
         self.open_location(start, record=False)
 
     # ---------------------------------------------------------- models
@@ -312,6 +346,8 @@ class Finder(Gtk.ApplicationWindow):
             b.pack_start(img, False, False, 0)
             b.pack_start(Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.END), True, True, 0)
             row.add(b); lb.add(row)
+            if hasattr(self, "dnd_targets") and (isinstance(target, str)):
+                self.dnd_sidebar_row(row)
         self.side.pack_start(lb, False, False, 0)
 
     def on_side(self, lb, row):
@@ -386,6 +422,15 @@ class Finder(Gtk.ApplicationWindow):
         self.status.set_text(tr("Loading…", "Caricamento…"))
         self.loaded, self.pending_thumbs = 0, []
         self.load_started = time.monotonic()
+        self.trash_bar.set_visible(self.in_trash())
+        # changes made by others (or by our own jobs) show up by themselves
+        if self.monitor:
+            self.monitor.cancel()
+        try:
+            self.monitor = self.folder.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+            self.monitor.connect("changed", self.on_folder_changed)
+        except GLib.Error:
+            self.monitor = None
         self.folder.enumerate_children_async(ATTRS, Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, None,
                                              self.on_enum, (token, self.folder, None))
 
@@ -488,6 +533,8 @@ class Finder(Gtk.ApplicationWindow):
             self.refresh_special_view()
             if not self.search.has_focus():       # arrows move among the files, like the Mac
                 GLib.idle_add(lambda: self.grab_view() or False)
+            if self.reselect:
+                self.select_uris(self.reselect); self.reselect = set()
         self.update_status()
 
     def refresh_special_view(self):
@@ -716,6 +763,10 @@ class Finder(Gtk.ApplicationWindow):
     def fill_pathbar(self):
         for c in self.pathbar.get_children():
             c.destroy()
+        if self.folder.get_uri_scheme() == "trash":
+            b = Gtk.Button(label=tr("Trash", "Cestino"), relief=Gtk.ReliefStyle.NONE)
+            self.pathbar.pack_start(b, False, False, 0); self.pathbar.show_all()
+            return
         chain, f = [], self.folder
         while f is not None:
             chain.insert(0, f)
@@ -769,18 +820,44 @@ class Finder(Gtk.ApplicationWindow):
         sel = self.selected()
         m = Gtk.Menu()
 
-        def item(label, cb, sensitive=True):
+        def item(label, cb, sensitive=True, accel=None):
             it = Gtk.MenuItem(label=label); it.connect("activate", lambda *_: cb()); it.set_sensitive(sensitive)
+            if accel:
+                it.get_child().set_accel(*Gtk.accelerator_parse(accel)) if hasattr(it.get_child(), "set_accel") else None
             m.append(it)
+
+        def sep():
+            m.append(Gtk.SeparatorMenuItem())
+        trash = self.in_trash()
         if sel:
             item(tr("Open", "Apri"), lambda: [self.activate(f, d) for f, d in sel[:10]])
-            item(tr("Quick Look", "Anteprima rapida"), self.quicklook, any(not d for _, d in sel))
-            m.append(Gtk.SeparatorMenuItem())
+            item(tr("Quick Look", "Anteprima rapida"), self.quicklook, any(not d for _, d in sel), "space")
+            sep()
+            if trash:
+                item(tr("Put Back", "Rimetti"), self.act_restore)
+                item(tr("Delete Immediately…", "Elimina definitivamente…"), self.act_delete_now)
+            else:
+                item(tr("Move to Trash", "Sposta nel Cestino"), self.act_trash, True, "Delete")
+                sep()
+                item(tr("Rename…", "Rinomina…"), self.rename_dialog, len(sel) == 1, "F2")
+                item(tr("Duplicate", "Duplica"), self.act_duplicate, True, "<Control>d")
+                sep()
+                item(tr("Copy", "Copia"), lambda: self.clip_set("copy"), True, "<Control>c")
+                item(tr("Cut", "Taglia"), lambda: self.clip_set("cut"), True, "<Control>x")
+        if not trash:
+            item(tr("Paste", "Incolla"), self.paste, True, "<Control>v")
+            item(tr("New Folder", "Nuova cartella"), self.act_new_folder, True, "<Control><Shift>n")
+        else:
+            item(tr("Empty Trash…", "Svuota il Cestino…"), self.empty_trash)
+        sep()
+        if sel:
             item(tr("Copy Path", "Copia percorso"), self.copy_path)
         item(tr("Open in Thunar", "Apri in Thunar"), self.open_in_thunar)
-        m.append(Gtk.SeparatorMenuItem())
         item(tr("Show Hidden Files", "Mostra file nascosti") if not self.cfg["hidden"] else tr("Hide Hidden Files", "Nascondi file nascosti"),
              lambda: self.hidden_check.set_active(not self.cfg["hidden"]))
+        if self.get_application().undo_stack:
+            sep()
+            item(tr("Undo ", "Annulla ") + self.get_application().undo_stack[-1][0], self.act_undo, True, "<Control>z")
         m.show_all(); m.popup_at_pointer(ev)
 
     def quicklook(self):
@@ -808,13 +885,34 @@ class Finder(Gtk.ApplicationWindow):
         k = Gdk.keyval_name(ev.keyval) or ""
         ctrl = bool(ev.state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(ev.state & Gdk.ModifierType.SHIFT_MASK)
-        if self.search.has_focus() and not ctrl:
+        if self.search.has_focus() and (not ctrl or k.lower() in ("c", "x", "v", "a", "z")):
             if k == "Escape":
                 self.search.set_text(""); self.grab_view()
                 return True
             return False
         if ctrl and k in ("1", "2", "3", "4"):
             self.view_btns[("icons", "list", "columns", "gallery")[int(k) - 1]].set_active(True); return True
+        # file operations (Cmd is Ctrl on MangOS)
+        if ctrl and not shift and k.lower() == "c":
+            self.clip_set("copy"); return True
+        if ctrl and k.lower() == "x":
+            self.clip_set("cut"); return True
+        if ctrl and k.lower() == "v":
+            self.paste(move=bool(ev.state & Gdk.ModifierType.MOD1_MASK)); return True
+        if ctrl and k.lower() == "z":
+            self.act_undo(); return True
+        if ctrl and k.lower() == "a":
+            self.select_all(); return True
+        if ctrl and not shift and k.lower() == "d":
+            self.act_duplicate(); return True
+        if ctrl and shift and k.lower() == "n":
+            self.act_new_folder(); return True
+        if (ctrl and k == "BackSpace") or (not ctrl and k == "Delete"):
+            self.act_trash(); return True
+        if ctrl and shift and k == "Delete":
+            self.empty_trash(); return True
+        if k == "F2":
+            self.rename_dialog(); return True
         if ctrl and k in ("bracketleft",):
             self.go_back(); return True
         if ctrl and k in ("bracketright",):
@@ -842,6 +940,396 @@ class Finder(Gtk.ApplicationWindow):
     def grab_view(self):
         {"icons": self.iconview, "list": self.listview, "columns": self.columns,
          "gallery": self.gallery}[self.cfg["view"]].grab_focus()
+
+    # ---------------------------------------------------------- file operations (stage 3)
+    def in_trash(self):
+        return bool(self.folder) and self.folder.get_uri_scheme() == "trash"
+
+    def on_folder_changed(self, mon, f, other, event):
+        if getattr(self, "change_id", None):
+            GLib.source_remove(self.change_id)
+        self.change_id = GLib.timeout_add(350, self.reload_keep)
+
+    def reload_keep(self):
+        """Reload the folder, keeping the selection (and selecting what a job made)."""
+        self.change_id = None
+        if self.cfg["view"] == "columns" and len(self.columns.cols) > 1:
+            # browsing deeper in the column view: refresh the deepest folder shown, where things happen
+            self.columns.refresh_last(self.reselect)
+            self.reselect = set()
+            return False
+        self.reselect |= {f.get_uri() for f, _ in self.selected()}
+        self.load()
+        return False
+
+    def select_uris(self, uris):
+        if self.cfg["view"] in ("icons", "gallery"):
+            view = self.iconview if self.cfg["view"] == "icons" else self.gallery.strip
+            view.unselect_all()
+            first = None
+            for r in self.sorted:
+                if r[C_URI] in uris:
+                    view.select_path(r.path); first = first or r.path
+            if first is not None:
+                view.scroll_to_path(first, False, 0, 0)
+                if self.cfg["view"] == "icons":
+                    self.iconview.set_cursor(first, None, False)
+        elif self.cfg["view"] == "list":
+            sel = self.listview.get_selection(); sel.unselect_all()
+            for r in self.tree_sorted:
+                if r[C_URI] in uris:
+                    sel.select_path(r.path); self.listview.scroll_to_cell(r.path, None, False, 0, 0)
+
+    def select_all(self):
+        if self.cfg["view"] == "icons":
+            self.iconview.select_all()
+        elif self.cfg["view"] == "list":
+            self.listview.get_selection().select_all()
+
+    # clipboard: shared by all Mango Finder windows; Thunar's clipboard is read too
+    def clip_set(self, mode):
+        files = [f for f, _ in self.selected()]
+        if not files:
+            return
+        app = self.get_application()
+        app.clip = (mode, files)
+        text = "\n".join(f.get_path() or f.get_uri() for f in files)
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
+        app.clip_text = text
+        n = len(files)
+        self.status.set_text((tr(f"{n} item(s) copied", f"{n} elementi copiati") if mode == "copy" else
+                              tr(f"{n} item(s) cut: paste to move", f"{n} elementi tagliati: incolla per spostarli")))
+
+    def paste(self, move=False):
+        app = self.get_application()
+        cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        # ours, unless something else was copied since (then the system clipboard wins)
+        own = app.clip if app.clip and cb.wait_for_text() == getattr(app, "clip_text", None) else None
+        files, mode = [], "copy"
+        target = Gdk.Atom.intern("x-special/gnome-copied-files", False)
+        data = cb.wait_for_contents(target)            # copied in Thunar (or GNOME Files)
+        if data and data.get_data() and not own:
+            lines = data.get_data().decode("utf-8", "replace").splitlines()
+            if lines and lines[0] in ("copy", "cut"):
+                mode = lines[0]
+                files = [Gio.File.new_for_uri(u) for u in lines[1:] if u.strip()]
+        elif own:
+            mode, files = own
+        else:
+            uris = cb.wait_for_uris() or []
+            files = [Gio.File.new_for_uri(u) for u in uris]
+        if not files:
+            return
+        dest = self.drop_folder()
+        kind = "move" if (move or mode == "cut") else "copy"
+        self.run_job(kind, files, dest)
+        if mode == "cut" and own:
+            app.clip = None
+
+    def drop_folder(self):
+        """Where pasted items go: the current folder (or, in the column view, the deepest one shown)."""
+        if self.cfg["view"] == "columns" and self.columns.cols:
+            return self.columns.cols[-1][0]
+        return self.folder
+
+    def run_job(self, kind, files, dest=None, label=None, **kw):
+        if self.in_trash() and kind in ("copy", "move", "new_folder", "duplicate") and dest is not None and dest.get_uri_scheme() == "trash":
+            if kind == "move":
+                kind, dest = "trash", None          # dropping into the Trash = Move to Trash
+            else:
+                return
+        job = fileops.Job(kind, files, dest, copy_word=tr("copy", "copia"),
+                          folder_word=tr("untitled folder", "Nuova cartella"), **kw)
+        job.progress = lambda d, t, n: GLib.idle_add(self.on_progress, job, d, t, n)
+        job.conflict_cb = lambda src, dst: self.ask_main(self.ask_conflict, src, dst)
+        job.confirm = lambda what, fs: self.ask_main(self.ask_confirm, what, fs)
+        job.label = label or self.job_label(kind, files, dest)
+        job.started = time.monotonic()
+        self.jobs.append(job)
+
+        def work():
+            job.run()
+            GLib.idle_add(self.job_done, job)
+        threading.Thread(target=work, daemon=True).start()
+        GLib.timeout_add(500, self.maybe_show_progress, job)
+        return job
+
+    def job_label(self, kind, files, dest):
+        n = len(files)
+        what = files[0].get_basename() if n == 1 else tr(f"{n} items", f"{n} elementi")
+        where = self.display_name(dest) if dest else ""
+        return {"copy": tr(f"Copying {what} to “{where}”", f"Copia di {what} in “{where}”"),
+                "move": tr(f"Moving {what} to “{where}”", f"Spostamento di {what} in “{where}”"),
+                "trash": tr(f"Moving {what} to the Trash", f"Spostamento di {what} nel Cestino"),
+                "delete": tr(f"Deleting {what}", f"Eliminazione di {what}"),
+                "empty_trash": tr("Emptying the Trash", "Svuotamento del Cestino"),
+                "duplicate": tr(f"Duplicating {what}", f"Duplicazione di {what}"),
+                "restore": tr(f"Putting back {what}", f"Ripristino di {what}")}.get(kind, "")
+
+    def ask_main(self, fn, *args):
+        """Runs a dialog on the main thread and waits for the answer (called from a job's thread)."""
+        box, ev = {}, threading.Event()
+
+        def run():
+            box["r"] = fn(*args); ev.set()
+            return False
+        GLib.idle_add(run)
+        ev.wait()
+        return box["r"]
+
+    def ask_conflict(self, src, dst):
+        folder = fileops.is_dir(dst)
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                              buttons=Gtk.ButtonsType.NONE,
+                              text=tr(f"An item named “{dst.get_basename()}” already exists in this location.",
+                                      f"In questa posizione esiste già un elemento chiamato “{dst.get_basename()}”."))
+        d.format_secondary_text(tr("Do you want to replace it with the one you are copying?",
+                                   "Vuoi sostituirlo con quello che stai copiando?") if not folder else
+                                tr("Merging adds the items of the folder you are copying; nothing is deleted.",
+                                   "Unire aggiunge gli elementi della cartella che stai copiando; non viene eliminato niente."))
+        d.add_buttons(tr("Stop", "Interrompi"), 1, tr("Skip", "Salta"), 2, tr("Keep Both", "Mantieni entrambi"), 3,
+                      tr("Merge", "Unisci") if folder else tr("Replace", "Sostituisci"), 4)
+        allc = Gtk.CheckButton(label=tr("Apply to all", "Applica a tutti"), margin_start=12)
+        d.get_message_area().pack_start(allc, False, False, 0); allc.show()
+        d.set_default_response(3)
+        r = d.run(); a = allc.get_active(); d.destroy()
+        return ({1: "cancel", 2: "skip", 3: "keep", 4: "replace"}.get(r, "cancel"), a)
+
+    def ask_confirm(self, what, files):
+        if what == "no-trash":
+            n = len(files)
+            return self.yes_no(tr(f"“{files[0].get_basename()}” cannot be moved to the Trash." if n == 1 else
+                                  f"{n} items cannot be moved to the Trash.",
+                                  f"“{files[0].get_basename()}” non può andare nel Cestino." if n == 1 else
+                                  f"{n} elementi non possono andare nel Cestino."),
+                               tr("This disk has no Trash. Delete immediately? You cannot undo this.",
+                                  "Questo disco non ha un Cestino. Eliminare subito? Non si potrà annullare."),
+                               tr("Delete", "Elimina"))
+        return False
+
+    def yes_no(self, text, sub, ok_label):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                              buttons=Gtk.ButtonsType.NONE, text=text)
+        d.format_secondary_text(sub)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, ok_label, Gtk.ResponseType.OK)
+        d.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("destructive-action")
+        d.set_default_response(Gtk.ResponseType.CANCEL)
+        r = d.run(); d.destroy()
+        return r == Gtk.ResponseType.OK
+
+    def maybe_show_progress(self, job):
+        if job in self.jobs:                       # still running after half a second: show the bar
+            self.prog_rev.set_reveal_child(True)
+        return False
+
+    def on_progress(self, job, done, total, name):
+        if not self.jobs or job is not self.jobs[-1]:
+            return False
+        frac = done / total if total else 0
+        self.prog_bar.set_fraction(min(1, frac))
+        left = ""
+        el = time.monotonic() - job.started
+        if frac > 0.02 and el > 2:
+            secs = int(el / frac - el)
+            left = (tr(f" — about {secs} s left", f" — circa {secs} s") if secs < 90 else
+                    tr(f" — about {secs // 60} min left", f" — circa {secs // 60} min"))
+        self.prog_label.set_text(f"{job.label}  {int(frac * 100)}%{left}")
+        return False
+
+    def stop_jobs(self):
+        for j in list(self.jobs):
+            j.cancel()
+
+    def job_done(self, job):
+        if job in self.jobs:
+            self.jobs.remove(job)
+        if not self.jobs:
+            self.prog_rev.set_reveal_child(False)
+        if job.undo:
+            self.get_application().undo_stack.append((job.label, job.undo))
+        self.reselect |= {f.get_uri() for f in job.created}
+        errs = [e for e in job.errors if e != "cancelled"]
+        if errs:
+            self.message(tr("The operation could not be completed:\n", "L'operazione non è stata completata:\n") +
+                         "\n".join(errs[:5]))
+        if job.kind == "new_folder" and job.created and not errs:
+            GLib.timeout_add(450, self.rename_dialog, job.created[0])
+        self.reload_keep()
+        return False
+
+    # the actions
+    def act_trash(self):
+        files = [f for f, _ in self.selected()]
+        if not files:
+            return
+        if self.in_trash():
+            self.act_delete_now(); return
+        self.run_job("trash", files)
+
+    def act_delete_now(self):
+        files = [f for f, _ in self.selected()]
+        if files and self.yes_no(tr("Delete immediately?", "Eliminare definitivamente?"),
+                                 tr("These items will be deleted. You cannot undo this.",
+                                    "Questi elementi verranno eliminati. Non si potrà annullare."),
+                                 tr("Delete", "Elimina")):
+            self.run_job("delete", files)
+
+    def empty_trash(self):
+        if self.yes_no(tr("Empty the Trash?", "Vuoi svuotare il Cestino?"),
+                       tr("Everything in the Trash will be deleted. You cannot undo this.",
+                          "Tutti gli elementi nel Cestino verranno eliminati. Non si potrà annullare."),
+                       tr("Empty Trash", "Svuota il Cestino")):
+            self.run_job("empty_trash", [])
+
+    def act_restore(self):
+        files = [f for f, _ in self.selected()]
+        if files:
+            self.run_job("restore", files)
+
+    def act_new_folder(self):
+        if not self.in_trash():
+            self.run_job("new_folder", [], self.drop_folder())
+
+    def act_duplicate(self):
+        files = [f for f, _ in self.selected()]
+        if files and not self.in_trash():
+            self.run_job("duplicate", files)
+
+    def rename_dialog(self, f=None):
+        if f is None:
+            sel = self.selected()
+            if len(sel) != 1 or self.in_trash():
+                return False
+            f = sel[0][0]
+        old = f.get_basename()
+        d = Gtk.Dialog(title=tr("Rename", "Rinomina"), transient_for=self, modal=True)
+        d.add_buttons(tr("Cancel", "Annulla"), Gtk.ResponseType.CANCEL, tr("Rename", "Rinomina"), Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        e = Gtk.Entry(text=old, activates_default=True, width_chars=36, margin=14)
+        d.get_content_area().add(e); d.show_all()
+        base, ext = fileops.split_ext(old)
+        e.select_region(0, len(base) if not fileops.is_dir(f) else -1)   # name without the extension, like the Mac
+        while d.run() == Gtk.ResponseType.OK:
+            new = e.get_text().strip()
+            if new == old or not new:
+                break
+            job = fileops.Job("rename", [f], new_name=new).run()
+            if job.errors:
+                self.message(tr("Cannot rename: ", "Impossibile rinominare: ") + job.errors[0])
+                continue
+            self.get_application().undo_stack.append((tr("Rename", "Rinomina"), job.undo))
+            self.reselect |= {c.get_uri() for c in job.created}
+            self.reload_keep()
+            break
+        d.destroy()
+        return False
+
+    def act_undo(self):
+        stack = self.get_application().undo_stack
+        if not stack:
+            self.status.set_text(tr("Nothing to undo", "Niente da annullare"))
+            return
+        label, records = stack.pop()
+
+        def work():
+            errs = fileops.undo(records)
+            GLib.idle_add(done, errs)
+
+        def done(errs):
+            if errs:
+                self.message(tr("Undo was not complete:\n", "Annullamento non completo:\n") + "\n".join(errs[:5]))
+            else:
+                self.status.set_text(tr("Undone: ", "Annullato: ") + label)
+            self.reload_keep()
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    # drag and drop: between Mango Finder windows, Thunar, the desktop, other apps
+    def setup_dnd(self):
+        targets = [Gtk.TargetEntry.new("text/uri-list", 0, 0)]
+        actions = Gdk.DragAction.COPY | Gdk.DragAction.MOVE
+        for v in (self.iconview, self.gallery.strip):
+            v.enable_model_drag_source(Gdk.ModifierType.BUTTON1_MASK, targets, actions)
+            v.connect("drag-data-get", self.on_drag_get)
+        self.iconview.enable_model_drag_dest(targets, actions)
+        self.iconview.connect("drag-data-received", self.on_drop_icons)
+        self.listview.enable_model_drag_source(Gdk.ModifierType.BUTTON1_MASK, targets, actions)
+        self.listview.enable_model_drag_dest(targets, actions)
+        self.listview.connect("drag-data-get", self.on_drag_get)
+        self.listview.connect("drag-data-received", self.on_drop_list)
+        self.dnd_targets, self.dnd_actions = targets, actions
+        self.fill_sidebar()                       # again, now that sidebar rows can take drops
+
+    def dnd_column(self, tv):
+        tv.enable_model_drag_source(Gdk.ModifierType.BUTTON1_MASK, self.dnd_targets, self.dnd_actions)
+        tv.enable_model_drag_dest(self.dnd_targets, self.dnd_actions)
+        tv.connect("drag-data-get", self.on_drag_get)
+        tv.connect("drag-data-received", self.on_drop_column)
+
+    def dnd_sidebar_row(self, row):
+        row.drag_dest_set(Gtk.DestDefaults.ALL, self.dnd_targets, self.dnd_actions)
+        row.connect("drag-data-received", lambda w, ctx, x, y, data, info, t: self.drop_files(
+            ctx, data, t, "trash" if w.target == "trash:///" else
+            (Gio.File.new_for_uri(w.target) if isinstance(w.target, str) else None)))
+
+    def on_drag_get(self, w, ctx, data, info, t):
+        data.set_uris([f.get_uri() for f, _ in self.selected()])
+
+    def on_drop_icons(self, w, ctx, x, y, data, info, t):
+        dest = self.folder
+        hit = w.get_dest_item_at_pos(x, y)
+        if hit:
+            path, pos = hit
+            r = w.get_model()[path]
+            if r[C_ISDIR] and pos in (Gtk.IconViewDropPosition.DROP_INTO, Gtk.IconViewDropPosition.DROP_ABOVE,
+                                      Gtk.IconViewDropPosition.DROP_BELOW, Gtk.IconViewDropPosition.DROP_LEFT,
+                                      Gtk.IconViewDropPosition.DROP_RIGHT):
+                dest = r[C_FILE]
+        GObject.signal_stop_emission_by_name(w, "drag-data-received")
+        self.drop_files(ctx, data, t, dest)
+
+    def on_drop_list(self, w, ctx, x, y, data, info, t):
+        dest = self.folder
+        hit = w.get_dest_row_at_pos(x, y)
+        if hit:
+            path, pos = hit
+            r = w.get_model()[path]
+            if r[C_FILE] is not None and r[C_ISDIR] and pos in (Gtk.TreeViewDropPosition.INTO_OR_BEFORE,
+                                                                Gtk.TreeViewDropPosition.INTO_OR_AFTER):
+                dest = r[C_FILE]
+        GObject.signal_stop_emission_by_name(w, "drag-data-received")
+        self.drop_files(ctx, data, t, dest)
+
+    def on_drop_column(self, w, ctx, x, y, data, info, t):
+        folder = next((c[0] for c in self.columns.cols if c[1] is w), self.folder)
+        dest = folder
+        hit = w.get_dest_row_at_pos(x, y)
+        if hit:
+            r = w.get_model()[hit[0]]
+            if r[2] is not None and r[3]:
+                dest = r[2]
+        GObject.signal_stop_emission_by_name(w, "drag-data-received")
+        self.drop_files(ctx, data, t, dest)
+
+    def drop_files(self, ctx, data, t, dest):
+        uris = data.get_uris() or []
+        files = [Gio.File.new_for_uri(u) for u in uris]
+        if not files or dest is None:
+            Gtk.drag_finish(ctx, False, False, t); return
+        if dest == "trash":
+            Gtk.drag_finish(ctx, True, False, t)
+            self.run_job("trash", files); return
+        files = [f for f in files if not f.equal(dest) and not (f.get_parent() and f.get_parent().equal(dest))]
+        if not files:
+            Gtk.drag_finish(ctx, False, False, t); return
+        # like the Mac: same disk -> move, another disk -> copy; Ctrl (Option) forces a copy
+        state = Gdk.Keymap.get_for_display(Gdk.Display.get_default()).get_modifier_state()
+        if state & Gdk.ModifierType.CONTROL_MASK:
+            kind = "copy"
+        else:
+            kind = "move" if all(fileops.same_fs(f, dest) for f in files) else "copy"
+        Gtk.drag_finish(ctx, True, False, t)
+        self.run_job(kind, files, dest)
 
     # ---------------------------------------------------------- one folder as a sorted list (Columns view)
     def list_folder(self, folder, cb, apply_search=False):
@@ -996,6 +1484,8 @@ class ColumnsView(Gtk.ScrolledWindow):
                    if not st[path][3] else None)
         tv.connect("key-press-event", lambda v, ev, i=index: self.on_key(i, ev))
         tv.connect("button-press-event", self.f.on_button)
+        if hasattr(self.f, "dnd_targets"):
+            self.f.dnd_column(tv)
         sw.show_all()
         token = self.token
 
@@ -1012,6 +1502,27 @@ class ColumnsView(Gtk.ScrolledWindow):
         self.f.list_folder(folder, filled, apply_search=first)
         GLib.idle_add(self.scroll_end)
         self.f.set_title(self.f.display_name(folder)); self.f.hb.set_title(self.f.get_title())
+
+    def refresh_last(self, select_uris=()):
+        """Reads the deepest column's folder again (after a copy, rename...), keeping its selection."""
+        if not self.cols:
+            return
+        folder, tv, store = self.cols[-1]
+        model, it = tv.get_selection().get_selected()
+        keep = set(select_uris)
+        if it is not None and model[it][2] is not None:
+            keep.add(model[it][2].get_uri())
+        token = self.token
+
+        def filled(rows, error=None):
+            if token != self.token or rows is None:
+                return
+            store.clear()
+            for r in rows:
+                it2 = store.append([r[C_NAME], r[C_SMALL], r[C_FILE], r[C_ISDIR], "›" if r[C_ISDIR] else ""])
+                if r[C_URI] in keep:
+                    tv.get_selection().select_iter(it2)
+        self.f.list_folder(folder, filled)
 
     def scroll_end(self):
         adj = self.get_hadjustment()
@@ -1126,7 +1637,10 @@ class GalleryView(Gtk.Box):
 class App(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="org.mangos.Finder",
-                         flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.NON_UNIQUE)
+                         flags=Gio.ApplicationFlags.HANDLES_OPEN)
+        # one process for all windows: they share the clipboard and Undo
+        self.clip = None          # ("copy"|"cut", [Gio.File])
+        self.undo_stack = []      # [(label, records)]
 
     def setup(self):
         load_css()

@@ -248,11 +248,14 @@ marked **untested on hardware** still need a try on the real MacBook A1181.
 
 - A separate app (Launchpad: Mango Finder (beta)); Thunar stays the file
   manager for the Dock, the desktop and "Open folder" until Mango Finder is
-  complete. Stage 1 is **read-only**: it never copies, moves, renames or
-  deletes; "Open in Thunar" (right click) is there for that.
-- Views: Icons, List, Columns, Gallery (Ctrl+1..4). Coming in later stages:
-  copy / move / paste / drag and drop / Trash with progress, Get Info, tags,
-  drives' eject button.
+  complete. Views: Icons, List, Columns, Gallery (Ctrl+1..4).
+- File operations (stage 3): copy / cut / paste (also from Thunar), drag and
+  drop (same disk moves, another disk or Ctrl copies), Move to Trash, Rename,
+  New Folder, Duplicate, Undo, Put Back, Empty Trash. Deleting always goes to
+  the Trash; files are destroyed only by Empty Trash / Delete Immediately (in
+  the Trash, after a confirmation) or on a disk without Trash after asking.
+- Enter opens (like Thunar), F2 renames (the Mac uses Return to rename).
+- Coming next (stage 4): Get Info, tags, eject buttons for drives.
 - Large folders: 3,000 files take about 1.6 s on a modern PC; expect several
   seconds on a 2008 Core 2 Duo (the count is shown while loading).
 

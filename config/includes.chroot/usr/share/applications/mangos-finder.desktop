@@ -2,8 +2,8 @@
 Type=Application
 Name=Mango Finder (beta)
 Name[it]=Mango Finder (beta)
-Comment=Browse your files like the Mac's Finder: icons, list, columns, gallery (read-only beta)
-Comment[it]=Sfoglia i tuoi file come il Finder del Mac: icone, elenco, colonne, galleria (beta, solo lettura)
+Comment=Your files like the Mac's Finder: icons, list, columns, gallery, copy, move, Trash (beta)
+Comment[it]=I tuoi file come il Finder del Mac: icone, elenco, colonne, galleria, copia, sposta, Cestino (beta)
 Exec=mangos-finder %U
 Icon=system-file-manager
 Terminal=false

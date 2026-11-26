@@ -6,6 +6,10 @@
 # After an update, only the blocks newer than the build the computer had
 # before are shown.
 
+## 2026-11-26 00:45
+en: Mango Finder (beta) now works with your files: copy, cut and paste, drag and drop, Move to Trash, Rename, New Folder, Duplicate, Undo (Ctrl+Z), Put Back and Empty Trash, with a progress bar.
+it: Mango Finder (beta) ora lavora sui tuoi file: copia, taglia e incolla, trascinamento, Sposta nel Cestino, Rinomina, Nuova cartella, Duplica, Annulla (Ctrl+Z), Rimetti e Svuota il Cestino, con la barra di avanzamento.
+
 ## 2026-11-26 00:19
 en: Mango Finder (beta): Columns view (each folder in a new column, with a preview of the selected file) and Gallery view (a large preview with thumbnails below). Ctrl+1, 2, 3, 4 switch views.
 it: Mango Finder (beta): vista Colonne (ogni cartella in una nuova colonna, con l'anteprima del file selezionato) e vista Galleria (anteprima grande con le miniature sotto). Ctrl+1, 2, 3, 4 cambiano vista.
